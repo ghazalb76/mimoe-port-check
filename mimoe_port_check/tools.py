@@ -38,31 +38,53 @@ KNOWN_SERVICES: dict[int, tuple[str, str]] = {
     27017: ("MongoDB", "Database — typically should not be network-exposed."),
 }
 
-# Known macOS system/app processes: lowercased command name -> (service
-# label, note, expected executable path prefixes). A command name alone is
-# spoofable (any process can set its own argv[0]/name), so a match here is
-# only trusted when the process's actual executable path (from `ps -o
-# comm=`, which the process can't fake) starts with one of the expected
-# prefixes -- see _match_known_process. An empty prefix tuple means the
-# process has no fixed install location to check (e.g. mimoe runs from
-# wherever the user set it up) and the name match is trusted on its own.
-KNOWN_PROCESSES: dict[str, tuple[str, str, tuple[str, ...]]] = {
-    "rapportd": (
+@dataclass(frozen=True)
+class KnownProcess:
+    service_name: str
+    local_note: str
+    exposed_note: str
+    exposed_risk: str  # most known processes are "INFO"; see mimoe below for why one isn't
+    path_prefixes: tuple[str, ...]  # empty means no fixed install path to verify -- name-only match
+
+
+def _info_process(service_name: str, note: str, path_prefixes: tuple[str, ...]) -> KnownProcess:
+    """Most known processes are broadcast/discovery services that are
+    *supposed* to be reachable on the LAN (AirPlay, Handoff, Spotify
+    Connect) -- exposure there is expected, not a finding, hence INFO."""
+    return KnownProcess(
+        service_name=service_name,
+        local_note=f"{note} Bound to localhost only.",
+        exposed_note=f"{note} Exposed to the network — expected for this service.",
+        exposed_risk="INFO",
+        path_prefixes=path_prefixes,
+    )
+
+
+# Known macOS system/app processes: lowercased command name -> KnownProcess.
+# A command name alone is spoofable (any process can set its own
+# argv[0]/name), so a match here is only trusted when the process's actual
+# executable path (from `ps -o comm=`, which the process can't fake) starts
+# with one of path_prefixes -- see _match_known_process. An empty
+# path_prefixes means the process has no fixed install location to check
+# (e.g. mimoe runs from wherever the user set it up) and the name match is
+# trusted on its own.
+KNOWN_PROCESSES: dict[str, KnownProcess] = {
+    "rapportd": _info_process(
         "Handoff/Continuity",
         "Apple continuity between your devices.",
         ("/usr/libexec/rapportd",),
     ),
-    "controlcenter": (
+    "controlcenter": _info_process(
         "AirPlay Receiver",
         "macOS Control Center's AirPlay receiver (commonly ports 5000/7000).",
         ("/System/Library/CoreServices/ControlCenter.app/",),
     ),
-    "spotify": (
+    "spotify": _info_process(
         "Spotify Connect",
         "Spotify's local device-discovery service.",
         ("/Applications/Spotify.app/",),
     ),
-    "code helper": (
+    "code helper": _info_process(
         "VS Code",
         "A VS Code helper process (extension host, GPU, renderer, etc.).",
         (
@@ -70,10 +92,22 @@ KNOWN_PROCESSES: dict[str, tuple[str, str, tuple[str, ...]]] = {
             "/Applications/Visual Studio Code - Insiders.app/Contents/Frameworks/Code Helper",
         ),
     ),
-    "mimoe": (
-        "mimOE",
-        "Local AI inference endpoint used by this agent.",
-        (),
+    # mimoe is deliberately NOT an _info_process: unlike the broadcast/
+    # discovery services above, it isn't meant to be reachable by other
+    # machines, and mimOE's API key defaults to a fixed, publicly-documented
+    # value (see .env.example) -- so if it's exposed, anyone on the local
+    # network can use this machine's inference endpoint. That's a real
+    # finding, not expected behavior, hence MEDIUM rather than INFO.
+    "mimoe": KnownProcess(
+        service_name="mimOE",
+        local_note="Local AI inference endpoint used by this agent. Bound to localhost only.",
+        exposed_note=(
+            "Local AI inference endpoint used by this agent. Exposed to all network "
+            "interfaces — the API key is a shared default, so anyone on the local "
+            "network could reach and use this inference endpoint."
+        ),
+        exposed_risk="MEDIUM",
+        path_prefixes=(),
     ),
 }
 
@@ -133,20 +167,20 @@ def _fetch_exe_path(pid: int) -> str | None:
     return path or None
 
 
-def _match_known_process(command: str, pid: int | None) -> tuple[str, str] | None:
-    """Return (service_name, note) if `command` matches a KNOWN_PROCESSES
-    entry and, when that entry has expected path prefixes, the process's
-    real executable path confirms it. A name match with a failed path check
-    falls through to the port-based table instead of being trusted."""
+def _match_known_process(command: str, pid: int | None) -> KnownProcess | None:
+    """Return the KnownProcess entry if `command` matches one and, when that
+    entry has expected path prefixes, the process's real executable path
+    confirms it. A name match with a failed path check falls through to the
+    port-based table instead of being trusted."""
     normalized = command.strip().lower()
-    for name, (service_name, note, path_prefixes) in KNOWN_PROCESSES.items():
+    for name, known_process in KNOWN_PROCESSES.items():
         if normalized != name and not normalized.startswith(name):
             continue
-        if path_prefixes:
+        if known_process.path_prefixes:
             exe_path = _fetch_exe_path(pid) if pid is not None else None
-            if not exe_path or not exe_path.startswith(path_prefixes):
+            if not exe_path or not exe_path.startswith(known_process.path_prefixes):
                 continue
-        return service_name, note
+        return known_process
     return None
 
 
@@ -154,18 +188,18 @@ def label_risk(port: int, exposed_to_network: bool, command: str = "", pid: int 
     """Return (service_name, risk_level, risk_note).
 
     Process identity is checked first via KNOWN_PROCESSES: a recognized,
-    path-verified macOS system/app process is labeled LOW (localhost) or
-    INFO (network-exposed but expected, e.g. AirPlay/Handoff/Spotify
-    Connect broadcasting on the LAN) regardless of port -- never MEDIUM or
-    HIGH, since these are legitimate services whose port is incidental.
-    Falls back to the port-based KNOWN_SERVICES table otherwise.
+    path-verified macOS system/app process is labeled LOW when bound to
+    localhost, and each entry defines its own network-exposed risk/note
+    (most are INFO -- e.g. AirPlay/Handoff/Spotify Connect are *meant* to be
+    reachable on the LAN -- but mimoe is MEDIUM, since it isn't). This
+    matching happens regardless of port. Falls back to the port-based
+    KNOWN_SERVICES table when nothing in KNOWN_PROCESSES matches.
     """
     known_process = _match_known_process(command, pid)
     if known_process is not None:
-        service_name, note = known_process
         if exposed_to_network:
-            return service_name, "INFO", f"{note} Exposed to the network — expected for this service."
-        return service_name, "LOW", f"{note} Bound to localhost only."
+            return known_process.service_name, known_process.exposed_risk, known_process.exposed_note
+        return known_process.service_name, "LOW", known_process.local_note
 
     known = KNOWN_SERVICES.get(port)
     service_name = known[0] if known else "Unknown service"

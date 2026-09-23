@@ -120,6 +120,10 @@ FAKE_LSOF_MIMOE = """COMMAND    PID     USER   FD   TYPE DEVICE SIZE/OFF NODE NA
 mimoe      900  someuser    3u  IPv4    0x1      0t0  TCP 127.0.0.1:8083 (LISTEN)
 """
 
+FAKE_LSOF_MIMOE_EXPOSED = """COMMAND    PID     USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
+mimoe      900  someuser    3u  IPv4    0x1      0t0  TCP *:8083 (LISTEN)
+"""
+
 
 def _fake_run_lsof_then_ps(lsof_output: str, ps_output: str):
     def fake_run(args, **kwargs):
@@ -179,6 +183,21 @@ def test_list_ports_labels_known_process_with_no_fixed_path_by_name_only(mock_ru
     assert entries[0].service_name == "mimOE"
     assert entries[0].risk == "LOW"
     mock_run.assert_called_once()  # no extra `ps` lookup needed -- no path to verify
+
+
+@patch("mimoe_port_check.tools.subprocess.run")
+def test_list_ports_labels_exposed_mimoe_as_medium_not_info(mock_run):
+    # Unlike the broadcast/discovery services (AirPlay, Handoff, Spotify
+    # Connect), mimoe exposed to the network is a real finding: the API key
+    # defaults to a shared value, so anyone on the LAN could use it.
+    mock_run.return_value = _mock_result(FAKE_LSOF_MIMOE_EXPOSED)
+
+    entries = list_ports()
+
+    assert entries[0].service_name == "mimOE"
+    assert entries[0].risk == "MEDIUM"
+    assert "default" in entries[0].risk_note
+    assert "local network" in entries[0].risk_note
 
 
 @patch("mimoe_port_check.tools.subprocess.run")

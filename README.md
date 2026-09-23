@@ -71,9 +71,9 @@ There are four risk levels:
 | Risk   | Meaning |
 |--------|---------|
 | HIGH   | A sensitive service (SSH, a database, VNC, etc.) exposed to all network interfaces. |
-| MEDIUM | Any other service — known or unknown — exposed to all network interfaces. |
+| MEDIUM | Any other service — known or unknown — exposed to all network interfaces (this includes `mimoe` itself, see below). |
 | LOW    | Bound to localhost only, so not reachable from the network. |
-| INFO   | A recognized macOS system/app service (see below) that's exposed to the network as part of its normal function — e.g. AirPlay or Spotify Connect broadcasting on the LAN. |
+| INFO   | A recognized macOS *broadcast/discovery* service (see below) that's exposed to the network as part of its normal function — e.g. AirPlay or Spotify Connect broadcasting on the LAN. |
 
 **Known processes are labeled by identity first, then by port, and the
 identity match is path-verified.** A process's declared name (`argv[0]`) is
@@ -85,6 +85,16 @@ can't fake) starts with the path that service is expected to run from (e.g.
 name match with a mismatched path falls back to the ordinary port-based
 table instead of being trusted. `mimoe` is checked by name only, since it
 has no fixed install location — it runs from wherever the user set it up.
+
+Each `KNOWN_PROCESSES` entry sets its own network-exposed risk level, not a
+blanket rule. Most of them (rapportd, ControlCenter, Spotify, Code Helper)
+are broadcast/discovery services that are *meant* to be reachable on the
+LAN, so exposure there is expected and gets INFO. `mimoe` is the deliberate
+exception: it isn't meant to be reachable by other machines, and its API key
+defaults to a fixed, shared value (see `.env.example`) — so if it's exposed,
+anyone on the local network can use this machine's inference endpoint. That
+gets MEDIUM, with a note explaining why, the same as any other unexpectedly
+network-exposed service.
 
 **Raw `requests` over the `openai` SDK.** This is one POST to one endpoint
 (`/chat/completions`, non-streaming). Writing the HTTP call by hand keeps every
@@ -170,7 +180,28 @@ answer printed to the user, alongside the raw findings
   documented in `NOTES.md` as it was found. This is why the agent always prints
   the code-computed findings *before* the model's prose: the findings are the
   source of truth, the explanation is a best-effort layer on top that may degrade
-  without the tool's correctness degrading with it.
+  without the tool's correctness degrading with it. It's also why the explain
+  step is only called when there's something notable to say (see "Skip the
+  model on nothing-to-explain" below) and is given a short, pre-filtered
+  summary rather than the full findings.
+- **Model-based routing essentially never works with the default model
+  (`smollm-360m`); the keyword fallback is what actually routes every
+  question.** `evals/run_routing_eval.py` (16 varied questions, reproducible —
+  run it yourself) measured the model attempting valid tool-choice JSON on
+  0/16 questions with few-shot examples written as prose inside the system
+  prompt. Restructuring the same examples as real `(user, assistant)` message
+  turns instead of prose (see `router.py`) got it to attempt JSON on 1/16 —
+  and that one attempt just echoed the last few-shot example's answer verbatim
+  rather than reasoning about the new question, so 0% of model-routed answers
+  were correct either way. Isolated `curl` testing confirmed this is a hard
+  capability ceiling of this specific model, not a prompt-wording bug: it
+  doesn't reliably follow "respond with ONLY \<json\>" even reduced to "output
+  exactly: \<json\>" with nothing else in the prompt. The architecture already
+  assumed this (see "Model picks a tool via JSON" above) — the router's
+  correctness has never actually depended on the model succeeding here, which
+  is exactly why the keyword fallback exists and carries the real workload.
+  This turned out to be specific to `smollm-360m`, not a ceiling for every
+  small model mimOE can run — see "Model comparison" below.
 - **macOS only, for now.** `list_ports`/`inspect_process` parse `lsof`/`ps` output
   in their macOS (BSD) format. Linux support (`/proc`, or GNU `ps`/`ss` output
   parsing) would be a natural next step.
@@ -184,6 +215,44 @@ answer printed to the user, alongside the raw findings
   instead of a standalone CLI; possibly a stricter output grammar/constrained
   decoding for the explain step if mimOE exposes one, to reduce the rambling
   described above.
+
+## Model comparison
+
+The agent's default model stays `smollm-360m` (see `.env.example`) — this
+section is informational, not a recommendation to switch, and reproducing it
+doesn't change any default. Run it yourself with:
+
+```bash
+python evals/run_routing_eval.py --model <model-id>
+python evals/run_explain_eval.py --model <model-id>
+```
+
+| Model | Size | Routing accuracy (16 Qs) | Avg routing latency | Explain-step quality | Avg explain latency |
+|---|---|---|---|---|---|
+| `smollm-360m` (default) | 360M | 0% correct via model (1/16 attempted, 0 correct; 100% effectively via keyword fallback) | ~410ms | Weakest of the three: frequently loops the same sentence verbatim, sometimes fabricates an entirely nonexistent second finding (an extra port/pid not in the data), and occasionally gives generic off-topic technical advice (e.g. suggesting unrelated shell commands) instead of explaining the actual finding | ~1.3s |
+| `qwen3-1.7b` | 1.7B | 88% correct via model (14/16; 1 wrong, 1 fallback) | ~680ms | Coherent, grounded 2-4 sentence summaries referencing the actual finding and a sensible suggestion, on most questions; one observed case invented an unsupported "security threat" framing for a result that carried no risk label, despite the prompt saying not to invent risk assessments | ~1.5s |
+| `qwen3-4b` | 4B | 94% correct via model (15/16; 1 wrong, 0 fallback) | ~1.35s | Similarly coherent and consistent; one observed case fabricated specific technical details (port numbers) that did not appear anywhere in the underlying data — a more concrete, specific-sounding hallucination than qwen3-1.7b's, even though the prose read smoothly | ~2.7s |
+
+Reading this as a tradeoff: `smollm-360m` is fastest but its routing is
+carried entirely by the keyword fallback, and its explanations are the least
+reliable. Both Qwen models route well, with `qwen3-4b` slightly more
+accurate but roughly 2x the latency of `qwen3-1.7b` on both steps, and
+neither is hallucination-free — `qwen3-4b`'s fabrications are more specific
+and plausible-sounding, which arguably makes them more dangerous to trust
+at a glance than `qwen3-1.7b`'s vaguer ones. The default stays
+`smollm-360m` for now.
+
+**Qwen3 needed one fix to be usable at all:** it's a reasoning model that
+emits a `<think>...</think>` block before answering, and at this agent's
+existing token budgets (`max_tokens=60` for routing, `120` for explaining)
+that reasoning consumed the *entire* budget, leaving no room for the actual
+answer — confirmed by raising `max_tokens` well past those limits in
+isolated testing and watching it still be mid-thought. Adding the literal
+`/no_think` directive (which Qwen3 recognizes) to both system prompts fixed
+this immediately; it's inert text to models that don't recognize it, so it
+doesn't change `smollm-360m`'s behavior. `router.strip_think_blocks` also
+strips any `<think>` block that does slip through before anything is
+displayed, as a second layer.
 
 ## How I used AI assistance
 

@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
 from mimoe_port_check.config import Config
-from mimoe_port_check.router import keyword_fallback, route
+from mimoe_port_check.router import keyword_fallback, route, strip_think_blocks
 
 CONFIG = Config(
     base_url="http://localhost:8083/mimik-ai/openai/v1",
@@ -47,6 +47,32 @@ def test_route_coerces_quoted_numeric_args(mock_chat):
 
 
 @patch("mimoe_port_check.router.chat_completion")
+def test_route_strips_think_block_before_parsing(mock_chat):
+    mock_chat.return_value = (
+        "<think>The user wants to know what's listening. I should use "
+        'the {tool} format, e.g. {"example": "not real"}.</think>\n'
+        '{"tool": "list_ports", "args": {}}'
+    )
+
+    result = route("what's open?", CONFIG)
+
+    assert result.tool == "list_ports"
+    assert result.args == {}
+    assert result.source == "model"
+
+
+@patch("mimoe_port_check.router.chat_completion")
+def test_route_falls_back_when_only_a_think_block_is_present(mock_chat):
+    # An unterminated/truncated think block (e.g. cut off by max_tokens)
+    # leaves no real answer to find -- must fail safe to the fallback.
+    mock_chat.return_value = "<think>Let me consider the options for this question"
+
+    result = route("what's open?", CONFIG)
+
+    assert result.source == "fallback"
+
+
+@patch("mimoe_port_check.router.chat_completion")
 def test_route_falls_back_on_garbage_output(mock_chat):
     mock_chat.return_value = "I like turtles."
 
@@ -75,6 +101,15 @@ def test_route_falls_back_on_invalid_args_type(mock_chat):
     assert result.tool == "list_ports"  # no pid/port keyword in the question either
 
 
+def test_strip_think_blocks_removes_complete_block():
+    text = "<think>reasoning about the answer</think>The real answer."
+    assert strip_think_blocks(text) == "The real answer."
+
+
+def test_strip_think_blocks_leaves_text_without_one_alone():
+    assert strip_think_blocks("just an answer") == "just an answer"
+
+
 def test_keyword_fallback_detects_pid():
     result = keyword_fallback("what is process 512 doing?")
     assert result.tool == "inspect_process"
@@ -92,3 +127,24 @@ def test_keyword_fallback_defaults_to_list_ports():
     result = keyword_fallback("is anything risky listening?")
     assert result.tool == "list_ports"
     assert result.args == {}
+
+
+@patch("mimoe_port_check.router.chat_completion")
+def test_route_debug_prints_raw_model_output(mock_chat, capsys):
+    mock_chat.return_value = '{"tool": "list_ports", "args": {}}'
+
+    route("what's open?", CONFIG, debug=True)
+
+    captured = capsys.readouterr()
+    assert "[debug]" in captured.out
+    assert "list_ports" in captured.out
+
+
+@patch("mimoe_port_check.router.chat_completion")
+def test_route_without_debug_prints_nothing(mock_chat, capsys):
+    mock_chat.return_value = '{"tool": "list_ports", "args": {}}'
+
+    route("what's open?", CONFIG)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""

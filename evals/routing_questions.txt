@@ -1,0 +1,26 @@
+# Routing eval questions for evals/run_routing_eval.py.
+#
+# Format: question ||| expected_tool ||| expected_args (JSON)
+# Lines starting with # and blank lines are ignored.
+#
+# Covers all 3 tools with varied phrasing, so a "% routed correctly by the
+# model" number here is reproducible run to run and across prompt changes.
+
+what's open on my machine? ||| list_ports ||| {}
+what's currently listening? ||| list_ports ||| {}
+list all open ports ||| list_ports ||| {}
+is anything risky listening? ||| list_ports ||| {}
+give me a rundown of listening ports ||| list_ports ||| {}
+show me what's running on this machine ||| list_ports ||| {}
+
+tell me about process 512 ||| inspect_process ||| {"pid": 512}
+what is pid 42 doing? ||| inspect_process ||| {"pid": 42}
+show me details for process id 900 ||| inspect_process ||| {"pid": 900}
+who is running process 1234? ||| inspect_process ||| {"pid": 1234}
+what's the risk of process 12? ||| inspect_process ||| {"pid": 12}
+
+is port 5432 exposed to the network? ||| check_exposure ||| {"port": 5432}
+what's on port 22? ||| check_exposure ||| {"port": 22}
+who owns port 6379? ||| check_exposure ||| {"port": 6379}
+check port 443 ||| check_exposure ||| {"port": 443}
+is 8080 open to the network? ||| check_exposure ||| {"port": 8080}
