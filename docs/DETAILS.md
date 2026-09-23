@@ -35,7 +35,8 @@ the network too; if you don't recognize "someapp", it's worth a closer look.
 A process's declared name (`argv[0]`) is easy to spoof, so `KNOWN_PROCESSES`
 in `tools.py` only trusts a name match (`rapportd`, `ControlCenter`,
 `Spotify`, `Code Helper`, `mimoe`) once the process's actual executable path
-(from `ps -o comm=`, which the process can't fake) starts with the path that
+(from `ps -o comm=`, which reflects the actual executable rather than the name
+the process reports, so renaming alone can't spoof it) starts with the path that
 service is expected to run from, e.g.
 `/System/Library/CoreServices/ControlCenter.app/...` for ControlCenter. A
 name match with a mismatched path falls back to the ordinary port-based
@@ -81,19 +82,21 @@ roughly 2x the routing latency and about 1.5x the explain latency of
 specific and plausible-sounding (fabricated port numbers) than
 `qwen3-1.7b`'s vaguer invented framing, which is a worse failure mode to trust
 at a glance. That didn't reproduce in the latest run, and hallucinations vary
-between runs, which is why the findings from code are always shown first.
-`smollm-360m` is last because its
-routing depends on the keyword fallback and its explanations are the least
-reliable of the three. Its 16/16 end-to-end score comes entirely from that
-fallback, which was tuned using two of the same 16 eval questions, so it is
-likely optimistic on new phrasings. Qwen3 is preferred because its explanations
-are much better and its routing doesn't depend on hand-written keyword rules,
-though three of the routing few-shot examples also appear in the eval set, so
-its routing numbers are somewhat optimistic too. It stays in the list because
-it ships with mimOE, so it's the fallback when no Qwen model is loaded. It is
-the fastest, at ~420ms routing.
-The grounding-check warning below the explain step exists precisely because
-none of these three models is hallucination-free.
+between runs, which is why the findings from code are always shown first. The
+grounding-check warning below the explain step exists precisely because none
+of these three models is hallucination-free.
+
+Qwen3 is preferred because its explanations are much better and its routing
+doesn't depend on hand-written keyword rules. Three of the routing few-shot
+examples also appear in the eval set, though, so its routing numbers are
+somewhat optimistic too.
+
+`smollm-360m` is last because its routing depends on the keyword fallback and
+its explanations are the least reliable of the three. Its 16/16 end-to-end
+score comes entirely from that fallback, which was tuned using two of the same
+16 eval questions, so it is likely optimistic on new phrasings.
+`smollm-360m` stays in the list because it ships with mimOE, so it's the
+fallback when no Qwen model is loaded. It is the fastest, at ~420ms routing.
 
 **Qwen3 needed one fix to be usable at all:** it's a reasoning model that
 emits a `<think>...</think>` block before answering, and at this agent's
