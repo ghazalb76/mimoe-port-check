@@ -1,9 +1,12 @@
 # mimoe-port-check
 
-A small local security check agent. It inspects listening ports and processes on
-**this machine only**, labels risk from a known-services table in code, and asks a
-local LLM (via mimOE Studio, OpenAI-compatible API) to explain the findings in plain
-language.
+A small local security-check agent: it inspects listening ports and processes
+on **this machine only**, labels risk in code (a known-services/known-processes
+table — never the model), and asks a model running in mimOE to explain the
+findings in plain language. Why local inference matters here: what's
+listening, which processes own it, and their command-line arguments are
+sensitive — this agent refuses to run against anything but a localhost mimOE
+endpoint, so that data never crosses a network boundary.
 
 ```
 > what's open on my machine?
@@ -26,11 +29,15 @@ the network too; if you don't recognize "someapp", it's worth a closer look.
 (routed via model: list_ports {})
 ```
 
-_(The transcript above uses fake sample data — see [Security](#security) for why
-real output never gets committed. The [Limitations](#limitations) section is
-honest about where the model's explanation is less reliable than this.)_
+_(Fake sample data — see [Security](#security) for why real output never gets
+committed.)_
 
-## How to run it
+## Quick start
+
+1. In mimOE Studio, load a model. `qwen3-1.7b` is recommended (see
+   [Model comparison](#model-comparison)); `smollm-360m` also works, just with
+   much weaker routing — the agent auto-selects whichever of these you have
+   loaded.
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
@@ -50,14 +57,26 @@ Type `exit` or Ctrl-D to quit.
 ## Approach and design decisions
 
 **Model picks a tool via JSON; code validates and falls back to keywords.**
-SmolLM2-360M is small and, confirmed by hand while building this, not reliable at
-structured output — it drifts off-topic even on a plain "say hello." So instead of
-trusting a framework's function-calling machinery, the agent asks the model for one
-small JSON object (`{"tool": "...", "args": {...}}`) from a 3-tool menu, and every
-field is validated in code against a whitelist before anything runs. If the JSON is
-missing, malformed, or names a tool/argument that doesn't fit, a deterministic
-keyword matcher routes the question instead — over the *user's own text*, never
-over whatever the model produced. See [`router.py`](mimoe_port_check/router.py).
+Small local models aren't reliable at structured output — confirmed by hand
+early on (SmolLM2-360M drifted off-topic even on a plain "say hello"). So
+instead of trusting a framework's function-calling machinery, the agent asks
+the model for one small JSON object (`{"tool": "...", "args": {...}}`) from a
+3-tool menu, and every field is validated in code against a whitelist before
+anything runs. If the JSON is missing, malformed, or names a tool/argument
+that doesn't fit, a deterministic keyword matcher routes the question instead
+— over the *user's own text*, never over whatever the model produced. See
+[`router.py`](mimoe_port_check/router.py).
+
+**No agent framework (LangChain, etc.); raw `requests`; `python-dotenv` for
+config.** Given the structured-output unreliability above, a framework's
+function-calling layer wouldn't have been more reliable than hand-rolled JSON
++ code validation — it would have added a dependency and an abstraction layer
+without solving the actual problem. Talking to mimOE is a couple of calls to
+one local OpenAI-compatible endpoint, so a raw `requests` client keeps every
+request/response detail visible and easy to explain in review, at the cost of
+an SDK's retries/typed models (not needed at this scale). `python-dotenv` is
+the one small exception: a single pinned dependency for `.env` loading, worth
+it for the ergonomics over manual `os.environ` parsing.
 
 **Risk labels come from code, not the model.** A known-services table
 (`KNOWN_SERVICES` in [`tools.py`](mimoe_port_check/tools.py)) maps ports like 22
@@ -96,19 +115,6 @@ anyone on the local network can use this machine's inference endpoint. That
 gets MEDIUM, with a note explaining why, the same as any other unexpectedly
 network-exposed service.
 
-**Raw `requests` over the `openai` SDK.** This is one POST to one endpoint
-(`/chat/completions`, non-streaming). Writing the HTTP call by hand keeps every
-request/response detail visible and easy to explain in a review, at the cost of
-the SDK's retries and typed response models — not worth pulling in a dependency
-for, at this scale.
-
-**Why local inference matters here.** The data this agent handles — what's
-listening, what process owns it, command-line arguments — is exactly the kind of
-thing you don't want leaving the machine. Running inference locally via mimOE means
-that data never crosses a network boundary. The agent enforces this itself: it
-refuses to start if the configured inference URL isn't `localhost` (see
-[Security](#security)).
-
 ## How the components connect
 
 ```
@@ -116,24 +122,77 @@ CLI (run.py)
   │  user question
   ▼
 agent loop (agent.py)
-  │  resolve_route(): reuse context for short follow-ups, else...
+  │  startup: auto-select a model from what's loaded in mimOE if MIMOE_MODEL
+  │  isn't set (client.select_model) -- see "Model comparison"
+  │  resolve_route(): reuse context for short follow-ups; off-topic question
+  │  (no port/pid/process/network keyword) or unmistakably non-numeric PID
+  │  reference -> a fixed message, no tool or model call at all
   ▼
 tool router (router.py)
   │  ask model for {"tool", "args"} → validate against whitelist
-  │  invalid/missing → deterministic keyword fallback over the question text
+  │  a chosen port/pid not literally present in the question is rejected too
+  │  invalid/missing/rejected → deterministic keyword fallback over the question
   ▼
 tools (tools.py) — list_ports / inspect_process / check_exposure
   │  subprocess.run([...]) with argument lists only, no shell=True
   │  PID/port validated as int in range; secrets redacted from command lines
   ▼
 mimOE endpoint (client.py) — POST /chat/completions
-  │
+  │  explains the (already-computed, already-redacted) findings
+  │  trimmed to its last complete sentence (agent.trim_to_complete_sentence)
   ▼
-SmolLM2-360M — explains the (already-computed, already-redacted) findings
-  │
+grounding + contradiction checks (agent.py)
+  │  flag a mentioned port/pid not in what the model was given, or a stated
+  │  exposure conclusion that disagrees with the findings
   ▼
-answer printed to the user, alongside the raw findings
+findings + explanation (+ warning, if flagged) printed to the user
 ```
+
+## Model comparison
+
+The agent auto-selects a model at startup from whatever's actually loaded in
+mimOE (see `client.select_model`) — `MIMOE_MODEL` in `.env` overrides this
+if set. This section is informational and reproducing it doesn't change
+that selection logic or any default. Run it yourself with:
+
+```bash
+python evals/run_routing_eval.py --model <model-id>
+python evals/run_explain_eval.py --model <model-id>
+```
+
+| Model | Size | Routing accuracy (16 Qs) | Avg routing latency | Explain-step quality | Avg explain latency |
+|---|---|---|---|---|---|
+| `smollm-360m` | 360M | 0% correct via model (1/16 attempted, 0 correct; 100% effectively via keyword fallback) | ~410ms | Weakest of the three: frequently loops the same sentence verbatim, sometimes fabricates an entirely nonexistent second finding (an extra port/pid not in the data), and occasionally gives generic off-topic technical advice (e.g. suggesting unrelated shell commands) instead of explaining the actual finding | ~1.3s |
+| `qwen3-1.7b` | 1.7B | 88% correct via model (14/16; 1 wrong, 1 fallback) | ~680ms | Coherent, grounded 2-4 sentence summaries referencing the actual finding and a sensible suggestion, on most questions; one observed case invented an unsupported "security threat" framing for a result that carried no risk label, despite the prompt saying not to invent risk assessments | ~1.5s |
+| `qwen3-4b` | 4B | 94% correct via model (15/16; 1 wrong, 0 fallback) | ~1.35s | Similarly coherent and consistent; one observed case fabricated specific technical details (port numbers) that did not appear anywhere in the underlying data — a more concrete, specific-sounding hallucination than qwen3-1.7b's, even though the prose read smoothly | ~2.7s |
+
+**Why `select_model` prefers `qwen3-1.7b`, then `qwen3-4b`, then
+`smollm-360m`:** `qwen3-1.7b` gets the best balance of the three — routing
+correctness the keyword fallback doesn't have to carry, and the lowest
+latency of the two models that actually route well. `qwen3-4b` is second:
+slightly more accurate (94% vs. 88%) but at roughly 2x the latency of
+`qwen3-1.7b` on both steps, and its hallucinations run more
+specific/plausible-sounding (fabricated port numbers) rather than less
+frequent — arguably a worse failure mode to trust at a glance than
+`qwen3-1.7b`'s vaguer invented framing. `smollm-360m` is last on the list,
+not because it's fast (it is, ~410ms vs. ~680ms+), but because it ships
+with mimOE by default and something has to be the fallback when neither
+Qwen model happens to be loaded — its routing is carried entirely by the
+keyword fallback, and its explanations are the least reliable of the three.
+The grounding-check warning below the explain step exists precisely because
+none of these three models is hallucination-free.
+
+**Qwen3 needed one fix to be usable at all:** it's a reasoning model that
+emits a `<think>...</think>` block before answering, and at this agent's
+existing token budgets (`max_tokens=60` for routing, `120` for explaining)
+that reasoning consumed the *entire* budget, leaving no room for the actual
+answer — confirmed by raising `max_tokens` well past those limits in
+isolated testing and watching it still be mid-thought. Adding the literal
+`/no_think` directive (which Qwen3 recognizes) to both system prompts fixed
+this immediately; it's inert text to models that don't recognize it, so it
+doesn't change `smollm-360m`'s behavior. `router.strip_think_blocks` also
+strips any `<think>` block that does slip through before anything is
+displayed, as a second layer.
 
 ## Security
 
@@ -160,13 +219,14 @@ answer printed to the user, alongside the raw findings
   the tool boundary — before the data leaves `tools.py` at all.
 - **No raw output is logged.** What's printed to the terminal is the same
   already-redacted data sent to the model; nothing extra is written to disk.
-- **No real system output is committed.** README, tests, and this transcript all
-  use fabricated sample data (fake PIDs, fake hostnames).
+- **No real system output is committed.** README, NOTES.md, tests, and evals
+  all use fabricated or genuinely non-identifying sample data.
 - **Hard refusal on a non-localhost inference URL.** `config.py` checks the
   hostname in `MIMOE_BASE_URL` and refuses to start if it isn't
   `localhost`/`127.0.0.1`/`::1` — no override flag, since sending local system
   data to a non-local endpoint should require a deliberate code change, not a
-  runtime flag.
+  runtime flag. This is what makes local inference the actual security
+  property here, not just a performance choice.
 - **No `sudo`, no state-changing actions.** Every tool is read-only and
   informational; the agent never kills a process or changes a system setting.
 - **`.env` is gitignored**; dependencies are minimal and pinned
@@ -174,85 +234,62 @@ answer printed to the user, alongside the raw findings
 
 ## Limitations
 
-- **The model's explanation step is unreliable.** Hand-testing against the real
-  running SmolLM2-360M showed it sometimes just echoes the findings back, and
-  sometimes hallucinates unrelated Python code, even at low temperature —
-  documented in `NOTES.md` as it was found. This is why the agent always prints
-  the code-computed findings *before* the model's prose: the findings are the
-  source of truth, the explanation is a best-effort layer on top that may degrade
-  without the tool's correctness degrading with it. It's also why the explain
-  step is only called when there's something notable to say (see "Skip the
-  model on nothing-to-explain" below) and is given a short, pre-filtered
-  summary rather than the full findings.
-- **Model-based routing essentially never works with the default model
-  (`smollm-360m`); the keyword fallback is what actually routes every
-  question.** `evals/run_routing_eval.py` (16 varied questions, reproducible —
-  run it yourself) measured the model attempting valid tool-choice JSON on
-  0/16 questions with few-shot examples written as prose inside the system
-  prompt. Restructuring the same examples as real `(user, assistant)` message
-  turns instead of prose (see `router.py`) got it to attempt JSON on 1/16 —
-  and that one attempt just echoed the last few-shot example's answer verbatim
-  rather than reasoning about the new question, so 0% of model-routed answers
-  were correct either way. Isolated `curl` testing confirmed this is a hard
-  capability ceiling of this specific model, not a prompt-wording bug: it
-  doesn't reliably follow "respond with ONLY \<json\>" even reduced to "output
-  exactly: \<json\>" with nothing else in the prompt. The architecture already
-  assumed this (see "Model picks a tool via JSON" above) — the router's
-  correctness has never actually depended on the model succeeding here, which
-  is exactly why the keyword fallback exists and carries the real workload.
-  This turned out to be specific to `smollm-360m`, not a ceiling for every
-  small model mimOE can run — see "Model comparison" below.
+- **The model's explanation step is unreliable, so it's kept off the critical
+  path.** The agent always prints the code-computed findings *before* the
+  model's prose (findings are the source of truth), skips the model
+  entirely when there's nothing to explain, sends it only a short
+  pre-filtered summary of notable findings rather than the full results,
+  trims a truncated mid-sentence response to its last complete sentence, and
+  runs best-effort grounding and exposure-contradiction checks afterward to
+  flag invented specifics or a stated conclusion that disagrees with the
+  findings. None of this makes the model reliable — see
+  [Model comparison](#model-comparison) for how unreliable, concretely — it
+  just keeps the tool's correctness from depending on the model's fluency.
+- **Routing correctness depends heavily on which model is loaded, and isn't
+  fully delegated to the model even when one is.** `evals/run_routing_eval.py`
+  (16 varied questions, reproducible) is how the numbers in the Model
+  comparison table were measured; the keyword fallback is what actually
+  routes every question when `smollm-360m` is loaded, not the model. On top
+  of that, a model-chosen port/pid is rejected (and the question falls
+  through to the keyword fallback) unless that exact number actually appears
+  in the user's question -- live testing found a model parroting its last
+  few-shot example's answer verbatim for unrelated questions, which this
+  catches regardless of which model is loaded. An off-topic question (no
+  port/pid/process/network keyword at all) or an unmistakably non-numeric
+  PID reference (e.g. "process abc") never reaches the model at all.
+- **The grounding, contradiction, and off-topic/invalid-input checks are all
+  conservative keyword heuristics, not guarantees.** The grounding check
+  only catches a fabricated number immediately preceded by
+  "port"/"pid"/"process"; the contradiction check only fires when both texts
+  are unambiguous in one direction; the off-topic gate is a fixed keyword
+  list, so a legitimately on-topic question that happens to avoid all of
+  them would be misclassified. Each was chosen to avoid false positives at
+  the cost of missing some real issues -- see the code comments in
+  `agent.py` for the specific tradeoffs.
 - **macOS only, for now.** `list_ports`/`inspect_process` parse `lsof`/`ps` output
-  in their macOS (BSD) format. Linux support (`/proc`, or GNU `ps`/`ss` output
-  parsing) would be a natural next step.
+  in their macOS (BSD) format.
 - **UDP sockets are excluded from `list_ports`.** UDP has no connection state
   comparable to TCP's `LISTEN`, so "is this port open" is ambiguous for UDP in a
   way that seemed worth flagging rather than guessing at.
 - **Follow-up context is a single-slot memory** (the last tool+args), not a full
   conversation history passed back to the model — kept deliberately simple given
   how unreliable the model already is with a *single* turn of structured input.
-- **What's next:** Linux support; deploying this as a mim inside mimOE itself
-  instead of a standalone CLI; possibly a stricter output grammar/constrained
-  decoding for the explain step if mimOE exposes one, to reduce the rambling
-  described above.
 
-## Model comparison
+## What's next
 
-The agent's default model stays `smollm-360m` (see `.env.example`) — this
-section is informational, not a recommendation to switch, and reproducing it
-doesn't change any default. Run it yourself with:
-
-```bash
-python evals/run_routing_eval.py --model <model-id>
-python evals/run_explain_eval.py --model <model-id>
-```
-
-| Model | Size | Routing accuracy (16 Qs) | Avg routing latency | Explain-step quality | Avg explain latency |
-|---|---|---|---|---|---|
-| `smollm-360m` (default) | 360M | 0% correct via model (1/16 attempted, 0 correct; 100% effectively via keyword fallback) | ~410ms | Weakest of the three: frequently loops the same sentence verbatim, sometimes fabricates an entirely nonexistent second finding (an extra port/pid not in the data), and occasionally gives generic off-topic technical advice (e.g. suggesting unrelated shell commands) instead of explaining the actual finding | ~1.3s |
-| `qwen3-1.7b` | 1.7B | 88% correct via model (14/16; 1 wrong, 1 fallback) | ~680ms | Coherent, grounded 2-4 sentence summaries referencing the actual finding and a sensible suggestion, on most questions; one observed case invented an unsupported "security threat" framing for a result that carried no risk label, despite the prompt saying not to invent risk assessments | ~1.5s |
-| `qwen3-4b` | 4B | 94% correct via model (15/16; 1 wrong, 0 fallback) | ~1.35s | Similarly coherent and consistent; one observed case fabricated specific technical details (port numbers) that did not appear anywhere in the underlying data — a more concrete, specific-sounding hallucination than qwen3-1.7b's, even though the prose read smoothly | ~2.7s |
-
-Reading this as a tradeoff: `smollm-360m` is fastest but its routing is
-carried entirely by the keyword fallback, and its explanations are the least
-reliable. Both Qwen models route well, with `qwen3-4b` slightly more
-accurate but roughly 2x the latency of `qwen3-1.7b` on both steps, and
-neither is hallucination-free — `qwen3-4b`'s fabrications are more specific
-and plausible-sounding, which arguably makes them more dangerous to trust
-at a glance than `qwen3-1.7b`'s vaguer ones. The default stays
-`smollm-360m` for now.
-
-**Qwen3 needed one fix to be usable at all:** it's a reasoning model that
-emits a `<think>...</think>` block before answering, and at this agent's
-existing token budgets (`max_tokens=60` for routing, `120` for explaining)
-that reasoning consumed the *entire* budget, leaving no room for the actual
-answer — confirmed by raising `max_tokens` well past those limits in
-isolated testing and watching it still be mid-thought. Adding the literal
-`/no_think` directive (which Qwen3 recognizes) to both system prompts fixed
-this immediately; it's inert text to models that don't recognize it, so it
-doesn't change `smollm-360m`'s behavior. `router.strip_think_blocks` also
-strips any `<think>` block that does slip through before anything is
-displayed, as a second layer.
+- **Linux support.** `list_ports`/`inspect_process` would need `/proc` or
+  GNU `ps`/`ss` output parsing instead of macOS `lsof`/`ps` (BSD) format.
+- **Deploy as a mim inside mimOE itself**, instead of a standalone CLI —
+  would remove the separate client/server hop entirely.
+- **Mesh discovery.** mimOE can discover other mimOE instances on the local
+  network; this agent doesn't use that today. Any future use would need to
+  preserve the localhost-only guarantee for the *data being inspected* even
+  if inference itself became distributed across the mesh — worth exploring
+  carefully rather than adopting by default, since it's in tension with the
+  "this data never leaves the machine" property the agent currently enforces.
+- **Stricter output grammar/constrained decoding for the explain step**, if
+  mimOE exposes one, as a stronger alternative to the current
+  prompt-plus-grounding-check approach to reducing hallucination.
 
 ## How I used AI assistance
 

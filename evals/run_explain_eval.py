@@ -27,8 +27,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from mimoe_port_check.agent import (  # noqa: E402
     EXPLAIN_SYSTEM_PROMPT,
     deterministic_explanation,
+    find_exposure_contradiction,
+    find_ungrounded_claims,
     has_nothing_to_explain,
     summarize_notable,
+    trim_to_complete_sentence,
 )
 from mimoe_port_check.client import MimOEError, chat_completion  # noqa: E402
 from mimoe_port_check.config import NonLocalEndpointError, load_config  # noqa: E402
@@ -105,7 +108,18 @@ def main() -> None:
             print(f"  [could not reach mimOE] {exc}\n")
             continue
 
-        print(f"  ({latencies_seconds[-1] * 1000:.0f}ms) model explanation: {strip_think_blocks(answer).strip()}\n")
+        explanation_text = trim_to_complete_sentence(strip_think_blocks(answer).strip())
+        print(f"  ({latencies_seconds[-1] * 1000:.0f}ms) model explanation: {explanation_text}")
+
+        ungrounded = find_ungrounded_claims(explanation_text, notable_summary)
+        if ungrounded:
+            parts = [f"{kind} {sorted(numbers)}" for kind, numbers in ungrounded.items()]
+            print(f"  [warning: mentions {' and '.join(parts)} not present in the findings -- may be fabricated]")
+
+        contradiction = find_exposure_contradiction(explanation_text, notable_summary)
+        if contradiction:
+            print(f"  [warning: {contradiction} -- trust the findings above]")
+        print()
 
     print(f"Model: {config.model}")
     if latencies_seconds:

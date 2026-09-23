@@ -79,12 +79,13 @@ confirmed reachable (`curl` -> 200) at the start, so live testing was done
 throughout rather than only against mocks.
 
 1. **Dedup IPv4/IPv6** (`tools.py`): grouped lsof rows by `(port, pid)`
-   before building entries. Verified against real output: `rapportd` on this
-   machine genuinely listens on port 50104 over both IPv4 and IPv6
-   simultaneously — a real, not hypothetical, case.
+   before building entries. Verified against real output: a real macOS
+   system process on this machine genuinely listens on the same port over
+   both IPv4 and IPv6 simultaneously — a real, not hypothetical, case.
 2. **Full process names** (`tools.py`): added `lsof +c 0` and decoding for
    its `\xHH` escapes (used to keep spaces from breaking whitespace-column
-   parsing). Verified live: "Code Helper (Renderer)" etc. now show in full.
+   parsing). Verified live: multi-word process names with escaped spaces
+   now show in full instead of truncated/still-escaped.
 3. **Process-identity labeling, path-verified** (`tools.py`): added
    `KNOWN_PROCESSES` (rapportd, ControlCenter, Spotify, Code Helper, mimoe),
    checked before the port table. A name match is only trusted once the
@@ -230,5 +231,51 @@ accurate but ~2x the latency of qwen3-1.7b on both steps, and its
 hallucinations are more specific/plausible-sounding rather than less
 frequent. Default model left unchanged (`smollm-360m`) -- this was a
 comparison exercise, not a migration decision.
+
+## Session 4 — live-testing bugs, one commit each — 2026-09-22
+
+Live testing (not the eval scripts -- actual back-and-forth against the
+running CLI) surfaced 5 bugs. Fixed each as its own commit, full test suite
+green after every one.
+
+1. **Ungrounded tool arguments** (`router.py`): the model parroted its last
+   few-shot example's answer (`check_exposure`/port 5432) verbatim for both
+   "tell me about process abc" and "what's the weather?" -- syntactically
+   valid JSON, but not actually about the question asked.
+   `_args_grounded_in_question` now requires a chosen port/pid's literal
+   digits to appear somewhere in the question; otherwise `route()` falls
+   through to the keyword fallback.
+2. **Off-topic handling** (`agent.py`): `is_on_topic()` checks the question
+   against a fixed keyword set; if none match, `resolve_route` returns an
+   `off_topic` sentinel that `main()` intercepts before calling the model or
+   any tool, printing a short capability message. Verified the keyword set
+   against all 16 questions in `evals/routing_questions.txt` -- none
+   misclassified.
+3. **Invalid input** (`agent.py`): "process abc" mentions "process" (still
+   on-topic) but has no digits at all, and previously fell through to
+   `keyword_fallback`'s default case, silently running `list_ports`.
+   `_looks_like_invalid_pid_reference` (mentions pid/process AND zero
+   digits anywhere in the question) now short-circuits to a clear "please
+   give a numeric PID" message instead. Deliberately requires *zero* digits
+   in the whole question, not just next to the keyword, so it doesn't
+   misfire on "process id 900"-style phrasing.
+4. **Contradiction check** (`agent.py`): a real explanation read "It is not
+   exposed to all network interfaces. It is not exposed to any network
+   interfaces." for a summary that said MEDIUM/exposed -- the opposite of
+   the findings. Tricky part: the explanation contains "not exposed" twice
+   and no standalone "exposed" at all, so a naive substring check for
+   "exposed" would have wrongly concluded it *agreed* with the summary.
+   `_mentions_exposed` strips "not exposed"-style phrases before checking
+   for a standalone "exposed" claim specifically to handle this.
+   `find_exposure_contradiction` only fires when both texts are unambiguous
+   in one direction.
+5. **Truncation** (`agent.py`): `trim_to_complete_sentence` cuts a response
+   to its last complete sentence, so a mid-sentence cutoff (observed live,
+   trailing off as "...on port 8") doesn't get shown. Punctuation only
+   counts as a sentence end when followed by whitespace or the end of the
+   text -- without that, a naive "last '.' anywhere" search would cut
+   inside an IP address like `127.0.0.1` or right after "e.g." mid-sentence,
+   since both have periods immediately followed by more of the same
+   sentence or another digit.
 
 _(continue appending entries below as work progresses)_

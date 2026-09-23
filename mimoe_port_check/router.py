@@ -111,6 +111,11 @@ def route(question: str, config: Config, debug: bool = False) -> Route:
 
     try:
         tool, args = _parse_and_validate(raw)
+        if not _args_grounded_in_question(tool, args, question):
+            raise RoutingError(
+                f"Model chose {tool} {args}, but that number doesn't appear in the question "
+                "-- likely parroting a few-shot example rather than reasoning about this one"
+            )
         return Route(tool=tool, args=args, source="model")
     except RoutingError:
         return keyword_fallback(question)
@@ -154,6 +159,31 @@ def _parse_and_validate(raw_model_output: str) -> tuple[str, dict[str, Any]]:
         return tool, {"port": port}
 
     raise RoutingError(f"Unhandled tool '{tool}'")  # unreachable given the whitelist check
+
+
+_GROUNDED_PORT_PATTERN = re.compile(r"\bports?\b\s*#?\s*(\d{1,5})\b", re.IGNORECASE)
+
+
+def _args_grounded_in_question(tool: str, args: dict[str, Any], question: str) -> bool:
+    """A port/pid the model chose must appear in the *matching role* in the
+    user's own question, not just anywhere in it. Observed live: "tell me
+    about process 12977" -- a real number, but a PID reference -- got
+    routed to check_exposure/port=12977; the old check (any digit match
+    anywhere) let that through since 12977 genuinely appears in the
+    question. A port is only grounded if it directly follows "port"/
+    "ports"; a pid only if it directly follows "pid"/"process" (reusing
+    _PID_PATTERN, the same rule keyword_fallback already uses). list_ports
+    takes no args, so it's always grounded."""
+    if tool == "list_ports":
+        return True
+
+    if tool == "check_exposure":
+        return str(args.get("port")) in _GROUNDED_PORT_PATTERN.findall(question)
+
+    if tool == "inspect_process":
+        return str(args.get("pid")) in _PID_PATTERN.findall(question)
+
+    return False
 
 
 def _coerce_int(value: Any) -> int | None:

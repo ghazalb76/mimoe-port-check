@@ -35,6 +35,141 @@ REFERENTIAL_WORDS = {"it", "that", "this", "same", "there"}
 CONTEXT_AWARE_TOOLS = {"inspect_process", "check_exposure"}
 NOTABLE_RISKS = {"HIGH", "MEDIUM"}
 
+# Sentinel Route.tool values for a question that never reaches a real tool
+# -- see resolve_route and their handling in main().
+OFF_TOPIC_TOOL = "off_topic"
+OFF_TOPIC_MESSAGE = (
+    'I can only help with what\'s listening on this machine -- ports, '
+    'processes, and network exposure. Try "what\'s open on my machine?", '
+    '"what\'s on port 5432?", or "tell me about process 512".'
+)
+INVALID_PID_TOOL = "invalid_pid"
+INVALID_PID_MESSAGE = 'Please give a numeric PID, e.g. "tell me about process 512".'
+
+# Off-topic gate: a fixed, short keyword set, checked against every question
+# in evals/routing_questions.txt to confirm it doesn't misfire there. Live
+# testing found questions like "what's the weather?" and "run rm -rf ~"
+# getting routed (via a parroted model answer, see router.py) to a real
+# tool -- neither has anything to do with what this agent does.
+ON_TOPIC_KEYWORDS = {
+    "port", "ports", "pid", "pids", "process", "processes",
+    "network", "expose", "exposed", "exposure",
+    "listen", "listening", "open", "risk", "risky",
+    "running", "service", "services",
+}
+
+# Grounding check: catches a model inventing specific port/pid numbers not
+# present in what it was actually given -- observed live in model-comparison
+# testing (see NOTES.md) from both smollm-360m and qwen3-4b. Matches
+# singular/plural ("port 5060" / "ports 5060 and 5061" / "PIDs 12, 34"),
+# tolerates a colon/equals like "Port: 900" (also seen live), and pulls every
+# number out of the list that follows the keyword. Deliberately conservative:
+# a number stated without "port"/"pid"/"process" right before it (e.g. "it's
+# listening on 8083") won't be caught -- avoids flagging unrelated digits in
+# ordinary prose at the cost of missing some.
+_NUMBER_LIST = r"\d{1,5}(?:\s*(?:,|and|&)\s*\d{1,5})*"
+_KEYWORD_SEP = r"[\s:=]*"
+_PORT_MENTION_PATTERN = re.compile(
+    rf"\bports?\b{_KEYWORD_SEP}(?:number{_KEYWORD_SEP})?({_NUMBER_LIST})", re.IGNORECASE
+)
+_PID_MENTION_PATTERN = re.compile(
+    rf"\b(?:pids?|process(?:es)?)\b{_KEYWORD_SEP}(?:id{_KEYWORD_SEP})?({_NUMBER_LIST})", re.IGNORECASE
+)
+
+
+def _extract_mentioned_numbers(text: str, pattern: re.Pattern) -> set[int]:
+    numbers: set[int] = set()
+    for match in pattern.finditer(text):
+        numbers.update(int(n) for n in re.findall(r"\d+", match.group(1)))
+    return numbers
+
+
+def find_ungrounded_claims(explanation: str, source_summary: str) -> dict[str, set[int]]:
+    """Port/pid numbers `explanation` mentions that don't appear in
+    `source_summary` -- the actual data the model was given. Empty dict
+    means nothing looked fabricated (by this heuristic; see module-level
+    comment on its limits)."""
+    ungrounded: dict[str, set[int]] = {}
+
+    explanation_ports = _extract_mentioned_numbers(explanation, _PORT_MENTION_PATTERN)
+    source_ports = _extract_mentioned_numbers(source_summary, _PORT_MENTION_PATTERN)
+    extra_ports = explanation_ports - source_ports
+    if extra_ports:
+        ungrounded["ports"] = extra_ports
+
+    explanation_pids = _extract_mentioned_numbers(explanation, _PID_MENTION_PATTERN)
+    source_pids = _extract_mentioned_numbers(source_summary, _PID_MENTION_PATTERN)
+    extra_pids = explanation_pids - source_pids
+    if extra_pids:
+        ungrounded["pids"] = extra_pids
+
+    return ungrounded
+
+
+# Contradiction check: a simple keyword heuristic comparing whether the
+# explanation and the summary it was given agree on exposure direction.
+# Observed live: an explanation reading "It is not exposed to all network
+# interfaces. It is not exposed to any network interfaces." for a summary
+# that said MEDIUM/exposed -- the exact opposite of the findings. Note that
+# explanation contains "not exposed" twice and no standalone "exposed" at
+# all, so a naive "does the text contain 'exposed'" check would have
+# wrongly concluded the explanation *agreed* with the exposed summary;
+# _mentions_exposed strips "not exposed"-style phrases first specifically
+# to avoid that.
+_NOT_EXPOSED_MARKERS = ("not exposed", "not reachable", "localhost only", "bound to localhost")
+
+
+def _mentions_not_exposed(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in _NOT_EXPOSED_MARKERS)
+
+
+def _mentions_exposed(text: str) -> bool:
+    lowered = text.lower()
+    for marker in _NOT_EXPOSED_MARKERS:
+        lowered = lowered.replace(marker, "")
+    return "exposed" in lowered
+
+
+def find_exposure_contradiction(explanation: str, source_summary: str) -> str | None:
+    """None if the explanation and source_summary agree (or neither
+    mentions exposure); a short warning string if they contradict. Only
+    fires when each text is unambiguous in one direction -- a text
+    mentioning both "exposed" and "not exposed" (e.g. a multi-finding
+    summary) is left alone rather than guessed at."""
+    explanation_exposed = _mentions_exposed(explanation)
+    explanation_not_exposed = _mentions_not_exposed(explanation)
+    summary_exposed = _mentions_exposed(source_summary)
+    summary_not_exposed = _mentions_not_exposed(source_summary)
+
+    if explanation_exposed and not explanation_not_exposed and summary_not_exposed and not summary_exposed:
+        return "explanation says exposed to the network, but the findings say bound to localhost only"
+    if explanation_not_exposed and not explanation_exposed and summary_exposed and not summary_not_exposed:
+        return "explanation says not exposed, but the findings say it's exposed to the network"
+    return None
+
+
+# Truncation: max_tokens cuts the explanation off mid-sentence (observed
+# live, e.g. a repeated line ending in "...on port 8"). Trim to the last
+# complete sentence rather than showing a dangling fragment. The
+# punctuation must be followed by whitespace or the end of the text --
+# otherwise a naive "last '.' anywhere" search would cut inside "127.0.0.1"
+# or right after "e.g." mid-sentence. Not foolproof (e.g. a name ending a
+# sentence, like "...runs rapportd." followed immediately by another
+# sentence with no space, would still work fine; the failure mode this
+# guards against is specifically punctuation embedded in numbers/abbreviations).
+_SENTENCE_END_PATTERN = re.compile(r"[.!?](?=\s|$)")
+
+
+def trim_to_complete_sentence(text: str) -> str:
+    """Cut a trailing incomplete sentence fragment. If no complete sentence
+    is found at all, return the text unchanged rather than returning
+    nothing -- some content is better than none."""
+    matches = list(_SENTENCE_END_PATTERN.finditer(text))
+    if not matches:
+        return text.strip()
+    return text[: matches[-1].end()].strip()
+
 
 def format_list_ports(entries: list[PortEntry]) -> str:
     if not entries:
@@ -169,6 +304,25 @@ def deterministic_explanation(
     raise ValueError(f"Unknown tool '{chosen_route.tool}'")  # unreachable given has_nothing_to_explain
 
 
+def is_on_topic(question: str) -> bool:
+    """False when the question doesn't look like it's asking about ports,
+    processes, or network exposure at all."""
+    words = set(re.findall(r"[a-z]+", question.lower()))
+    return bool(words & ON_TOPIC_KEYWORDS)
+
+
+def _looks_like_invalid_pid_reference(question: str) -> bool:
+    """True when the question clearly means to reference a process by PID
+    (mentions "process"/"pid") but gives no digits at all -- e.g. "process
+    abc" or a literal, unfilled "process <PID>" placeholder. Deliberately
+    narrow: requires zero digits anywhere in the question, so it doesn't
+    misfire on a phrasing like "process id 900" where a valid number just
+    isn't immediately adjacent to the keyword."""
+    mentions_process = bool(re.search(r"\b(?:pid|process)\b", question, re.IGNORECASE))
+    has_digit = bool(re.search(r"\d", question))
+    return mentions_process and not has_digit
+
+
 def resolve_route(question: str, config: Config, last_route: Route | None, debug: bool = False) -> Route:
     """Route the question, reusing the previous tool+args for short referential
     follow-ups like "is it risky?" that don't repeat a pid/port number."""
@@ -177,6 +331,12 @@ def resolve_route(question: str, config: Config, last_route: Route | None, debug
         words = set(re.findall(r"[a-z']+", question.lower()))
         if not has_number and words & REFERENTIAL_WORDS:
             return Route(tool=last_route.tool, args=last_route.args, source="context")
+
+    if not is_on_topic(question):
+        return Route(tool=OFF_TOPIC_TOOL, args={}, source="off_topic")
+
+    if _looks_like_invalid_pid_reference(question):
+        return Route(tool=INVALID_PID_TOOL, args={}, source="invalid_input")
 
     return route(question, config, debug=debug)
 
@@ -229,6 +389,13 @@ def main(debug: bool = False) -> None:
             print(f"[Could not reach mimOE while choosing a tool] {exc}\n")
             continue
 
+        if chosen_route.tool == OFF_TOPIC_TOOL:
+            print(f"{OFF_TOPIC_MESSAGE}\n")
+            continue
+        if chosen_route.tool == INVALID_PID_TOOL:
+            print(f"{INVALID_PID_MESSAGE}\n")
+            continue
+
         try:
             tool_output, result = run_tool(chosen_route)
         except (ValueError, RuntimeError) as exc:
@@ -260,7 +427,18 @@ def main(debug: bool = False) -> None:
             print(f"[Could not reach mimOE for an explanation] {exc}\n")
             continue
 
-        print(f"Model explanation: {strip_think_blocks(answer).strip()}")
+        explanation_text = trim_to_complete_sentence(strip_think_blocks(answer).strip())
+        print(f"Model explanation: {explanation_text}")
+
+        ungrounded = find_ungrounded_claims(explanation_text, notable_summary)
+        if ungrounded:
+            parts = [f"{kind} {sorted(numbers)}" for kind, numbers in ungrounded.items()]
+            print(f"[warning: explanation mentions {' and '.join(parts)} not present in the findings -- may be fabricated]")
+
+        contradiction = find_exposure_contradiction(explanation_text, notable_summary)
+        if contradiction:
+            print(f"[warning: {contradiction} -- trust the findings above]")
+
         print(f"(routed via {chosen_route.source}: {chosen_route.tool} {chosen_route.args})\n")
 
 

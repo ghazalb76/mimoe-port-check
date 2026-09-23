@@ -29,7 +29,7 @@ def test_route_extracts_json_surrounded_by_rambling(mock_chat):
         "Hope that helps!"
     )
 
-    result = route("is 5432 exposed?", CONFIG)
+    result = route("is port 5432 exposed?", CONFIG)
 
     assert result.tool == "check_exposure"
     assert result.args == {"port": 5432}
@@ -99,6 +99,61 @@ def test_route_falls_back_on_invalid_args_type(mock_chat):
 
     assert result.source == "fallback"
     assert result.tool == "list_ports"  # no pid/port keyword in the question either
+
+
+@patch("mimoe_port_check.router.chat_completion")
+def test_route_rejects_ungrounded_port_from_process_question(mock_chat):
+    # Observed live: the model parroted its last few-shot example's answer
+    # (check_exposure/5432) for a question with no numbers in it at all.
+    mock_chat.return_value = '{"tool": "check_exposure", "args": {"port": 5432}}'
+
+    result = route("tell me about process abc", CONFIG)
+
+    assert result.source == "fallback"
+
+
+@patch("mimoe_port_check.router.chat_completion")
+def test_route_rejects_ungrounded_port_from_off_topic_question(mock_chat):
+    # Same parroted answer, observed live for a completely unrelated question.
+    mock_chat.return_value = '{"tool": "check_exposure", "args": {"port": 5432}}'
+
+    result = route("what's the weather?", CONFIG)
+
+    assert result.source == "fallback"
+
+
+@patch("mimoe_port_check.router.chat_completion")
+def test_route_accepts_grounded_port(mock_chat):
+    mock_chat.return_value = '{"tool": "check_exposure", "args": {"port": 5432}}'
+
+    result = route("is port 5432 exposed?", CONFIG)
+
+    assert result.source == "model"
+    assert result.args == {"port": 5432}
+
+
+@patch("mimoe_port_check.router.chat_completion")
+def test_route_rejects_ungrounded_pid_even_when_another_number_is_present(mock_chat):
+    # The model's pid doesn't match the number actually in the question --
+    # still ungrounded even though the question isn't number-free.
+    mock_chat.return_value = '{"tool": "inspect_process", "args": {"pid": 512}}'
+
+    result = route("what's on port 22?", CONFIG)
+
+    assert result.source == "fallback"
+
+
+@patch("mimoe_port_check.router.chat_completion")
+def test_route_rejects_number_in_wrong_role(mock_chat):
+    # Live bug: 12977 genuinely appears in the question, but as a PID
+    # reference, not a port -- routing it to check_exposure/port=12977 is
+    # wrong even though the plain "does this digit appear anywhere" check
+    # would have accepted it.
+    mock_chat.return_value = '{"tool": "check_exposure", "args": {"port": 12977}}'
+
+    result = route("tell me about process 12977", CONFIG)
+
+    assert result.source == "fallback"
 
 
 def test_strip_think_blocks_removes_complete_block():
