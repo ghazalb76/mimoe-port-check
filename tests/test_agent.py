@@ -21,6 +21,7 @@ from mimoe_port_check.agent import (
     process_question,
     resolve_route,
     run_tool,
+    strip_markdown,
     summarize_notable,
     trim_to_complete_sentence,
 )
@@ -458,6 +459,27 @@ def test_find_exposure_contradiction_double_negative_vs_exposed_summary():
     assert warning is not None
 
 
+def test_find_exposure_contradiction_none_for_advice_not_claim():
+    # Real live case with qwen3-1.7b: this exact sentence tripped the "says
+    # not exposed" warning against a summary that said exposed, but it's a
+    # recommendation ("ensure ... not exposed"), not a claim about current
+    # state. Same exposed summary as the double-negative case above, so
+    # only the advice-vs-claim distinction is under test here.
+    summary = (
+        "1 of 12 listening ports are notable:\n"
+        "- mimOE on port 8083 (pid 900): MEDIUM -- Local AI inference "
+        "endpoint used by this agent. Exposed to all network interfaces "
+        "-- the API key is a shared default, so anyone on the local "
+        "network could reach and use this inference endpoint."
+    )
+    explanation = (
+        "Check if these ports are necessary for your system and ensure "
+        "they're not exposed to the internet."
+    )
+
+    assert find_exposure_contradiction(explanation, summary) is None
+
+
 def test_find_exposure_contradiction_flags_explanation_says_exposed():
     summary = "Port 5432 (PostgreSQL): LOW -- Bound to localhost only."
     explanation = "Port 5432 is exposed to the network."
@@ -526,6 +548,25 @@ def test_trim_to_complete_sentence_keeps_full_text_past_abbreviation():
     text = "Consider changing the key, e.g. to a random value, for better security."
 
     assert trim_to_complete_sentence(text) == text
+
+
+def test_strip_markdown_removes_bold_and_bullets():
+    # Real live case with qwen3-1.7b: markdown markers showed up as literal
+    # asterisks since both the CLI and the web UI (textContent, never
+    # innerHTML) display plain text, not rendered markdown.
+    text = "**Port 8083** is exposed.\n- Consider restricting access.\n* Also check the API key."
+
+    assert strip_markdown(text) == "Port 8083 is exposed.\nConsider restricting access.\nAlso check the API key."
+
+
+def test_strip_markdown_removes_underscore_bold():
+    assert strip_markdown("__Port 8083__ is exposed.") == "Port 8083 is exposed."
+
+
+def test_strip_markdown_leaves_plain_text_alone():
+    text = "Port 8083 is exposed. Consider restricting access."
+
+    assert strip_markdown(text) == text
 
 
 def test_model_tip_for_smollm():
