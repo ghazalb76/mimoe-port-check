@@ -59,32 +59,39 @@ pytest
 ## How the components connect
 
 ```mermaid
-flowchart TD
-    Q[User question<br/>CLI or Web UI] --> A{resolve_route<br/>agent.py}
-    A -- follow-up --> CTX[Reuse last tool + args]
-    A -- off-topic or non-numeric PID --> FIX[Fixed message<br/>no model call]
-    A -- otherwise --> R{Tool router<br/>router.py}
-    R -- valid JSON, args grounded in question --> T
-    R -- invalid or ungrounded --> KW[Keyword fallback] --> T
-    CTX --> T[Read-only tools<br/>list_ports / inspect_process / check_exposure]
-    T --> RISK[Risk labels from code<br/>+ secret redaction]
-    RISK --> N{Anything to explain?}
-    N -- no --> DET[Deterministic message]
-    N -- yes --> M[mimOE local model<br/>explains findings]
-    M --> G[Grounding + contradiction checks]
-    G --> OUT[Findings + explanation<br/>+ warning if flagged]
-    DET --> OUT
+flowchart LR
+    Q[User question<br/>CLI or web UI] --> A
+    A[resolve_route<br/>agent.py] -- otherwise --> R
+    A -- follow-up --> CTX
+    A -- off-topic or bad PID --> FIX
+    CTX[Reuse last tool + args] --> T
+    FIX[Fixed message<br/>no model call]
+    R[Tool router<br/>router.py] -- valid JSON, grounded --> T
+    R -- invalid or ungrounded --> KW
+    KW[Keyword fallback] --> T
+    T[Read-only tools<br/>list_ports / inspect_process / check_exposure] --> RISK
+    RISK[Risk labels from code<br/>+ secret redaction] --> N
+    N[Anything to explain?] -- yes --> M
+    N -- no --> DET
+    DET[Deterministic message<br/>no model call] --> OUT
+    M[mimOE local model<br/>explains findings] --> G
+    G[Grounding + contradiction checks] --> OUT
+    OUT[Findings + explanation<br/>+ warning if flagged]
 
-    MIMOE[(mimOE on localhost:8083)] -.-> R
+    MIMOE[(mimOE on<br/>localhost:8083)] -.-> R
     MIMOE -.-> M
 
-    classDef modelStep fill:#cfe2ff,stroke:#4c6fef,color:#1a3d7c;
+    classDef entryStep fill:#efe9dc,stroke:#b8ae95,color:#3a3428;
+    classDef modelStep fill:#e3e0fb,stroke:#7c6fea,color:#3d2f8f;
     classDef codeStep fill:#d7f5df,stroke:#2f9e44,color:#1b5e33;
+    classDef sideStep fill:#d7f5df,stroke:#2f9e44,color:#1b5e33,stroke-dasharray: 5 3;
+    class Q,OUT entryStep;
     class R,M modelStep;
-    class T,RISK,G codeStep;
+    class A,T,RISK,N,G codeStep;
+    class CTX,FIX,KW,DET sideStep;
 ```
 
-Blue steps call the model (routing attempt, explanation). Green steps are owned entirely by code (tools, risk labels, guardrail checks).
+Purple calls the model (routing attempt, explanation). Green is owned entirely by code (tools, risk labels, guardrail checks); a dashed border marks a side path with no model call. Cream marks where the flow starts and ends.
 
 ## Model comparison
 
