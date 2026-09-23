@@ -3,7 +3,7 @@ code, and fall back to keyword matching if the model's output is invalid.
 
 SmolLM2-360M is small and not reliable at structured output (confirmed by
 hand: it drifted off-topic on a plain "say hello" prompt). So the model's
-JSON is a suggestion, never trusted directly — every field is validated
+JSON is a suggestion, never trusted directly: every field is validated
 against a strict whitelist/schema before any tool runs, and any parse or
 validation failure falls back to a keyword-based router over the user's
 own text (not the model's output).

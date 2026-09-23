@@ -174,7 +174,7 @@ def test_run_tool_dispatches_check_exposure(mock_check):
     formatted, result = run_tool(Route(tool="check_exposure", args={"port": 80}, source="model"))
 
     assert result is report
-    mock_check.assert_called_once_with(80)
+    mock_check.assert_called_once_with(80, self_pid=None)
 
 
 def test_summarize_notable_list_ports_filters_to_high_and_medium():

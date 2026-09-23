@@ -6,7 +6,7 @@ the tool's (already-redacted) structured result is handed to the model
 to explain in plain language -> answer is printed.
 
 The model never sees raw system output before it's redacted by tools.py,
-and it never chooses anything other than a tool name from the whitelist —
+and it never chooses anything other than a tool name from the whitelist:
 its explanation-step output is displayed as-is (aside from stripping a
 <think>...</think> reasoning block, if the model emits one -- see
 router.strip_think_blocks) but is never executed or treated as instructions.
@@ -241,10 +241,9 @@ def list_ports_summary(entries: list[PortEntry]) -> str:
 
 
 def format_list_ports(entries: list[PortEntry]) -> str:
-    if not entries:
-        return "No listening TCP ports found."
-
     summary = list_ports_summary(entries)
+    if not entries:
+        return summary
 
     # Group by process (command) so a process with several ports shows once,
     # not as several near-identical lines -- keeps output compact.
@@ -291,21 +290,29 @@ def format_check_exposure(report: ExposureReport) -> str:
     )
 
 
-def run_tool(chosen_route: Route) -> tuple[str, list[PortEntry] | ProcessDetails | ExposureReport]:
+def run_tool(
+    chosen_route: Route, self_pid: int | None = None,
+) -> tuple[str, list[PortEntry] | ProcessDetails | ExposureReport]:
     """Run the chosen tool, returning (formatted text for display, raw result).
+
+    self_pid, when given, is the caller's own pid (the web UI passes its
+    own), so its listening port -- if the tool happens to surface one --
+    is labeled as such by tools.label_risk instead of showing up as an
+    unrecognized service. The CLI has no listening port of its own, so it
+    never passes one.
 
     The raw result is kept alongside the formatted text so the explain step
     can build a short summary of just the notable findings (see
     summarize_notable) instead of re-parsing the display text.
     """
     if chosen_route.tool == "list_ports":
-        result = list_ports()
+        result = list_ports(self_pid=self_pid)
         return format_list_ports(result), result
     if chosen_route.tool == "inspect_process":
         result = inspect_process(chosen_route.args["pid"])
         return format_inspect_process(result), result
     if chosen_route.tool == "check_exposure":
-        result = check_exposure(chosen_route.args["port"])
+        result = check_exposure(chosen_route.args["port"], self_pid=self_pid)
         return format_check_exposure(result), result
     raise ValueError(f"Unknown tool '{chosen_route.tool}'")  # unreachable via the whitelist
 
@@ -428,13 +435,14 @@ class QuestionResult:
 
 
 def process_question(
-    question: str, config: Config, last_route: Route | None, debug: bool = False
+    question: str, config: Config, last_route: Route | None, debug: bool = False, self_pid: int | None = None,
 ) -> QuestionResult:
     """Core per-question pipeline: route -> run tool (or short-circuit for
     off-topic/invalid input) -> explain -> grounding/contradiction checks.
     Shared by the CLI (main()) and the web UI (web.py) so both behave
-    identically. Raises MimOEPhaseError/ValueError/RuntimeError on failure;
-    callers decide how to display that."""
+    identically. self_pid is forwarded to run_tool -- see its docstring.
+    Raises MimOEPhaseError/ValueError/RuntimeError on failure; callers
+    decide how to display that."""
     try:
         chosen_route = resolve_route(question, config, last_route, debug=debug)
     except MimOEError as exc:
@@ -452,7 +460,7 @@ def process_question(
         )
 
     try:
-        tool_output, result = run_tool(chosen_route)
+        tool_output, result = run_tool(chosen_route, self_pid=self_pid)
     except (ValueError, RuntimeError) as exc:
         raise RuntimeError(f"'{chosen_route.tool}': {exc}") from exc
 

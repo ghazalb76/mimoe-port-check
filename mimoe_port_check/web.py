@@ -18,20 +18,17 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .agent import MimOEPhaseError, QuestionResult, list_ports_summary, model_tip, process_question, resolve_config
-from .client import MimOEError, list_models
+from .config import LOCALHOST_HOSTS
 from .router import Route
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 INDEX_PATH = STATIC_DIR / "index.html"
-
-TRUSTED_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
 
 # Caps chosen generously for a chat-style question, tightly enough to
 # reject anything that isn't one. Enforced before process_question ever
 # runs, so an oversized/malformed request never reaches the model.
 MAX_BODY_BYTES = 4096
 MAX_QUESTION_LENGTH = 500
-MAX_MODEL_LENGTH = 200
 
 
 def is_trusted_host(host_header: str | None) -> bool:
@@ -43,7 +40,7 @@ def is_trusted_host(host_header: str | None) -> bool:
     if not host_header:
         return False
     hostname = urlparse(f"http://{host_header}").hostname
-    return hostname in TRUSTED_HOSTNAMES
+    return hostname in LOCALHOST_HOSTS
 
 
 def is_trusted_origin(origin_header: str | None, server_port: int) -> bool:
@@ -58,40 +55,9 @@ def is_trusted_origin(origin_header: str | None, server_port: int) -> bool:
         parsed = urlparse(origin_header)
     except ValueError:
         return False
-    if parsed.scheme != "http" or parsed.hostname not in TRUSTED_HOSTNAMES:
+    if parsed.scheme != "http" or parsed.hostname not in LOCALHOST_HOSTS:
         return False
     return parsed.port == server_port
-
-
-def _relabel_own_port(result: QuestionResult, own_port: int, own_pid: int) -> None:
-    """The web UI's own listening port otherwise shows up in list_ports/
-    check_exposure results as an unrecognized service -- label it clearly.
-
-    Matches on BOTH port and pid, not just port: a coincidentally
-    same-numbered port owned by a different process must never be
-    relabeled as "this is the web UI". Only relabels when the entry is
-    confirmed *not* exposed to the network -- run_server only ever binds
-    to 127.0.0.1, so this should always hold for our own port, but if it
-    somehow doesn't, the normal risk label is left untouched rather than
-    claiming LOW for something that's actually exposed.
-    """
-    entries = result.findings_data
-    if entries is None:
-        return
-    if not isinstance(entries, list):
-        entries = [entries]
-    for entry in entries:
-        if getattr(entry, "port", None) != own_port:
-            continue
-        if getattr(entry, "pid", None) != own_pid:
-            continue
-        if getattr(entry, "found", True) is not True:
-            continue
-        if getattr(entry, "exposed_to_network", None) is not False:
-            continue
-        entry.service_name = "mimoe-port-check web UI"
-        entry.risk = "LOW"
-        entry.risk_note = "This machine's own mimoe-port-check web UI. Bound to localhost only."
 
 
 def _serialize_findings(route: Route, findings_data) -> dict | None:
@@ -169,29 +135,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(html)
 
-    def _list_models_safe(self) -> list[str]:
-        """Models currently loaded in mimOE, for the UI's model picker.
-        Unlike _handle_set_model, a failure here shouldn't fail the whole
-        status response (the page still needs to show the current model
-        even if mimOE is briefly unreachable) -- so this swallows the
-        error and reports no choices instead."""
-        try:
-            return sorted(list_models(self.server.config))
-        except MimOEError:
-            return []
-
     def _serve_status(self) -> None:
         config = self.server.config
-        self._write_json(
-            200,
-            {"model": config.model, "tip": model_tip(config.model), "models": self._list_models_safe()},
-        )
+        self._write_json(200, {"model": config.model, "tip": model_tip(config.model)})
 
     def _read_json_body(self) -> dict | None:
-        """Shared by /api/ask and /api/model: enforce Content-Length and
-        MAX_BODY_BYTES, then parse the body as a JSON object. Writes the
-        rejection response itself and returns None on any failure, so
-        callers can just check for None."""
+        """Enforce Content-Length and MAX_BODY_BYTES, then parse the body
+        as a JSON object. Writes the rejection response itself and
+        returns None on any failure, so callers can just check for
+        None."""
         # int() directly, not str.isdigit() first: isdigit() returns True
         # for non-ASCII Unicode digits (e.g. "²") that int() then
         # rejects, which would otherwise raise an uncaught ValueError here
@@ -224,12 +176,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self._check_host_and_origin():
             return
-        if self.path == "/api/ask":
-            self._handle_ask()
-        elif self.path == "/api/model":
-            self._handle_set_model()
-        else:
+        if self.path != "/api/ask":
             self._reject(404, "not found")
+            return
+        self._handle_ask()
 
     def _handle_ask(self) -> None:
         payload = self._read_json_body()
@@ -249,7 +199,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            result = process_question(question, self.server.config, self.server.last_route, debug=self.server.debug)
+            result = process_question(
+                question, self.server.config, self.server.last_route,
+                debug=self.server.debug, self_pid=os.getpid(),
+            )
         except MimOEPhaseError as exc:
             self._reject(502, f"could not reach mimOE {exc.phase_context}: {exc}")
             return
@@ -262,46 +215,7 @@ class Handler(BaseHTTPRequestHandler):
             # aren't a real tool result, so they must not clobber the last
             # real route a referential follow-up ("is it risky?") would reuse.
             self.server.last_route = result.route
-        _relabel_own_port(result, self.server.server_port, os.getpid())
         self._write_json(200, serialize_question_result(result))
-
-    def _handle_set_model(self) -> None:
-        """Switch the model mimOE requests use from here on. Validated
-        against mimOE's own currently-loaded list (not just "is this a
-        non-empty string") so a bad choice fails fast with a clear 400
-        here, rather than surfacing later as a confusing chat_completion
-        error on the next question."""
-        payload = self._read_json_body()
-        if payload is None:
-            return
-
-        if not isinstance(payload.get("model"), str):
-            self._reject(400, "'model' must be a string")
-            return
-
-        requested_model = payload["model"].strip()
-        if not requested_model:
-            self._reject(400, "'model' must not be empty")
-            return
-        if len(requested_model) > MAX_MODEL_LENGTH:
-            self._reject(400, f"'model' is too long (max {MAX_MODEL_LENGTH} characters)")
-            return
-
-        try:
-            available = sorted(list_models(self.server.config))
-        except MimOEError as exc:
-            self._reject(502, f"could not reach mimOE to list models: {exc}")
-            return
-
-        if requested_model not in available:
-            self._reject(400, "that model isn't currently loaded in mimOE")
-            return
-
-        self.server.config = dataclasses.replace(self.server.config, model=requested_model)
-        self._write_json(
-            200,
-            {"model": self.server.config.model, "tip": model_tip(self.server.config.model), "models": available},
-        )
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8090, debug: bool = False) -> None:

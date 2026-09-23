@@ -201,6 +201,40 @@ def test_list_ports_labels_exposed_mimoe_as_medium_not_info(mock_run):
 
 
 @patch("mimoe_port_check.tools.subprocess.run")
+def test_list_ports_labels_own_pid_as_web_ui(mock_run):
+    # The web UI's own listening port would otherwise show up as an
+    # unrecognized service -- self_pid lets the caller identify it.
+    # postgres/222 is bound to 127.0.0.1 only, i.e. not exposed.
+    mock_run.return_value = _mock_result(FAKE_LSOF_OUTPUT)
+
+    entries = {e.pid: e for e in list_ports(self_pid=222)}
+
+    assert entries[222].service_name == "mimoe-port-check web UI"
+    assert entries[222].risk == "LOW"
+
+
+@patch("mimoe_port_check.tools.subprocess.run")
+def test_list_ports_does_not_label_other_pids_as_self(mock_run):
+    mock_run.return_value = _mock_result(FAKE_LSOF_OUTPUT)
+
+    entries = {e.pid: e for e in list_ports(self_pid=222)}
+
+    assert entries[111].service_name == "SSH"  # untouched
+
+
+@patch("mimoe_port_check.tools.subprocess.run")
+def test_list_ports_does_not_label_self_pid_if_exposed(mock_run):
+    # self_pid should only ever match a localhost-only entry in practice
+    # (run_server only binds to 127.0.0.1) -- but if it somehow didn't,
+    # don't paper over real exposure with a false LOW.
+    mock_run.return_value = _mock_result(FAKE_LSOF_OUTPUT)
+
+    entries = {e.pid: e for e in list_ports(self_pid=111)}  # sshd/111 is exposed
+
+    assert entries[111].service_name == "SSH"
+
+
+@patch("mimoe_port_check.tools.subprocess.run")
 def test_check_exposure_found(mock_run):
     mock_run.return_value = _mock_result(FAKE_LSOF_OUTPUT)
 
@@ -210,6 +244,16 @@ def test_check_exposure_found(mock_run):
     assert report.exposed_to_network is True
     assert report.service_name == "SSH"
     assert report.pid == 111
+
+
+@patch("mimoe_port_check.tools.subprocess.run")
+def test_check_exposure_labels_own_pid_as_web_ui(mock_run):
+    mock_run.return_value = _mock_result(FAKE_LSOF_OUTPUT)
+
+    report = check_exposure(5432, self_pid=222)  # postgres/222, localhost-only
+
+    assert report.service_name == "mimoe-port-check web UI"
+    assert report.risk == "LOW"
 
 
 @patch("mimoe_port_check.tools.subprocess.run")

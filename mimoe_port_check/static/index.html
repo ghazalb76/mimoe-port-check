@@ -109,16 +109,7 @@
     background: var(--blue-chip-bg);
     color: var(--blue-chip-text);
   }
-  #model-select {
-    font-size: 0.85rem;
-    color: var(--text-secondary);
-    background: transparent;
-    border: none;
-    max-width: 160px;
-  }
-  #model-select:disabled { color: var(--text-secondary); opacity: 1; }
-  #model-select:not(:disabled) { cursor: pointer; }
-  #model-select:focus { outline: none; }
+  #status-model { font-size: 0.85rem; color: var(--text-secondary); }
 
   .tip {
     margin-bottom: 1.25rem;
@@ -344,10 +335,8 @@
   </div>
   <div class="status-pill" id="status-pill">
     <span class="status-dot"></span>
-    <label for="model-select" class="chip">MODEL</label>
-    <select id="model-select" class="mono" disabled>
-      <option>connecting...</option>
-    </select>
+    <span class="chip">MODEL</span>
+    <span id="status-model" class="mono">connecting...</span>
   </div>
 </div>
 
@@ -382,7 +371,7 @@
 (function () {
   "use strict";
 
-  var modelSelect = document.getElementById("model-select");
+  var statusModel = document.getElementById("status-model");
   var tipBox = document.getElementById("tip");
   var form = document.getElementById("ask-form");
   var questionInput = document.getElementById("question");
@@ -590,73 +579,20 @@
     resultBox.appendChild(el("div", { text: message, className: "card alert-danger" }));
   }
 
-  // Options are the models mimOE currently has loaded (from /api/status or
-  // /api/model's response), never free text -- the dropdown can only ever
-  // offer a choice the server already validated.
-  function populateModelSelect(models, currentModel) {
-    clear(modelSelect);
-    if (models.length === 0) {
-      modelSelect.appendChild(el("option", { text: currentModel || "unreachable" }));
-      modelSelect.disabled = true;
-      return;
-    }
-    models.forEach(function (model) {
-      var option = el("option", { text: model });
-      option.value = model;
-      if (model === currentModel) {
-        option.selected = true;
-      }
-      modelSelect.appendChild(option);
-    });
-    modelSelect.disabled = false;
-  }
-
   function loadStatus() {
     fetch("/api/status")
       .then(function (response) { return response.json(); })
       .then(function (data) {
-        populateModelSelect(data.models || [], data.model);
+        statusModel.textContent = data.model;
         if (data.tip) {
           tipBox.textContent = data.tip;
           tipBox.hidden = false;
         }
       })
       .catch(function () {
-        populateModelSelect([], "unreachable");
+        statusModel.textContent = "unreachable";
       });
   }
-
-  modelSelect.addEventListener("change", function () {
-    var requestedModel = modelSelect.value;
-    modelSelect.disabled = true;
-
-    fetch("/api/model", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: requestedModel }),
-    })
-      .then(function (response) {
-        return response.json().then(function (data) {
-          return { ok: response.ok, data: data };
-        });
-      })
-      .then(function (result) {
-        if (!result.ok) {
-          renderError(result.data.error || "Could not switch model.");
-          loadStatus();
-          return;
-        }
-        populateModelSelect(result.data.models || [], result.data.model);
-        tipBox.hidden = !result.data.tip;
-        if (result.data.tip) {
-          tipBox.textContent = result.data.tip;
-        }
-      })
-      .catch(function () {
-        renderError("Could not reach the agent.");
-        loadStatus();
-      });
-  });
 
   function askQuestion(question) {
     question = question.trim();

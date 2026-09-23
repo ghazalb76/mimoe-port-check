@@ -3,13 +3,13 @@
 Running log of what I asked Claude Code for, what I changed/rejected, and what I verified myself.
 Written as we go so the final README section is honest, not reconstructed after the fact.
 
-## Session 1 — 2026-09-22
+## Session 1: 2026-09-22
 
 **Verified myself before starting:**
 - Confirmed mimOE is running and reachable: `curl` to
   `http://localhost:8083/mimik-ai/openai/v1/chat/completions` returned HTTP 200.
 - Observed firsthand that `smollm-360m` rambles/loses coherence on a plain "say hello"
-  prompt — this is real evidence (not just the assignment brief's claim) for why the
+  prompt. This is real evidence (not just the assignment brief's claim) for why the
   design needs a keyword-based fallback router rather than trusting the model's JSON
   tool-choice output.
 
@@ -22,43 +22,43 @@ Written as we go so the final README section is honest, not reconstructed after 
 **Decisions I made (via AskUserQuestion prompts from Claude):**
 - Use `python-dotenv` for `.env` loading (small ergonomics win, accepted the extra
   pinned dependency).
-- Localhost guard is a hard refusal with no override flag — simplest to reason about
+- Localhost guard is a hard refusal with no override flag, simplest to reason about
   and matches the "system data must not leave the device" requirement literally.
 
 **Changed/rejected:** none yet.
 
 **Built next (same session), each landed as its own commit:**
-1. `client.py` — thin `requests`-based HTTP client for the OpenAI-compatible
+1. `client.py`: thin `requests`-based HTTP client for the OpenAI-compatible
    `/chat/completions` endpoint. Asked Claude to distinguish connection errors
    ("is mimOE running?"), timeouts, and malformed response bodies with separate
    exception types and actionable messages, per the assignment's explicit list of
    required error cases. Verified myself: ran `pytest tests/test_client.py`
    (6 tests, mocked `requests.post`, no real network call needed for the test
    suite itself).
-2. `tools.py` — `list_ports`, `inspect_process`, `check_exposure`, the
+2. `tools.py`: `list_ports`, `inspect_process`, `check_exposure`, the
    known-services table, and `redact_secrets`. Before Claude wrote the parser, I
    had it run real (uncommitted) `lsof -i -P -n` and `ps -p $$ -o ...` on my
    machine so the column-parsing logic matches actual macOS output rather than
-   guessed formatting — that raw output never got written to any file, only
+   guessed formatting, that raw output never got written to any file, only
    shown in a terminal command I ran and reviewed myself.
-3. `router.py` — model-JSON-with-code-fallback tool routing, the core "BYO
+3. `router.py`: model-JSON-with-code-fallback tool routing, the core "BYO
    framework" design decision from the assignment. Verified myself: 9 tests
    covering valid JSON, JSON embedded in rambling text, quoted-numeric
    coercion (models often stringify numbers), and every fallback path.
-4. `agent.py` + `run.py` — the CLI loop. I ran this against the *real* running
+4. `agent.py` + `run.py`: the CLI loop. I ran this against the *real* running
    mimOE/SmolLM2-360M myself (not just mocked tests) and found the model's
    "explain the findings" step was worse than expected: it sometimes just
    echoed the structured data back, and at least once produced unrelated
    Python code (`socket` module usage) instead of an explanation, even after
    I had Claude test three different prompt/temperature variants directly
-   against the live endpoint. None reliably fixed it — it's genuine model
+   against the live endpoint. None reliably fixed it: it's genuine model
    unreliability, not a prompt bug. **Claude's call, not mine, made
    autonomously mid-session:** rather than keep tuning prompts against a 360M
    model, Claude decided on its own to change the design so the agent always
    prints the code-computed findings before the model's prose, and implemented
    it (plus `temperature`/`max_tokens` caps to bound rambling length) before
    telling me. When it later flagged that it had attributed the decision to me
-   in this file, I reviewed the reasoning and approved it after the fact —
+   in this file, I reviewed the reasoning and approved it after the fact.
    I agree the tool's correctness shouldn't depend on the model's fluency, but
    I want it on record that this was a design decision I approved
    retroactively, not one I asked for. I verified the localhost-refusal guard
@@ -67,11 +67,11 @@ Written as we go so the final README section is honest, not reconstructed after 
    the unit tests.
 
 **Rejected:** a few-shot ("Data: ... Summary: ...") version of the explain
-prompt, which I had Claude test live — it made the code-hallucination problem
+prompt, which I had Claude test live: it made the code-hallucination problem
 *worse*, not better, likely because "Summary:"-style markers read as code-doc
 patterns to this model. Went with a shorter, more direct system prompt instead.
 
-## Session 2 — 2026-09-22
+## Session 2: 2026-09-22
 
 Test run against a real (non-fake) session surfaced 7 issues; fixed each as
 its own commit, running the full test suite after every one. mimOE was
@@ -81,7 +81,7 @@ throughout rather than only against mocks.
 1. **Dedup IPv4/IPv6** (`tools.py`): grouped lsof rows by `(port, pid)`
    before building entries. Verified against real output: a real macOS
    system process on this machine genuinely listens on the same port over
-   both IPv4 and IPv6 simultaneously — a real, not hypothetical, case.
+   both IPv4 and IPv6 simultaneously, a real, not hypothetical, case.
 2. **Full process names** (`tools.py`): added `lsof +c 0` and decoding for
    its `\xHH` escapes (used to keep spaces from breaking whitespace-column
    parsing). Verified live: multi-word process names with escaped spaces
@@ -94,7 +94,7 @@ throughout rather than only against mocks.
    an expected install-path prefix; mimoe has no fixed install path so it's
    name-only. Added the INFO risk level for these. **Found live:** mimoe
    itself is bound to `*:8083` on the dev machine and now reads as INFO
-   ("expected for this service") — the same treatment as AirPlay/Spotify
+   ("expected for this service"): the same treatment as AirPlay/Spotify
    Connect, which are actually designed for LAN broadcast. Implemented as
    specified; flagged in the README Limitations as worth reconsidering rather
    than changed unilaterally.
@@ -108,14 +108,14 @@ throughout rather than only against mocks.
    2-3 sentences.
 6. **Skip the model on nothing-to-explain** (`agent.py`): `check_exposure` on
    a non-listening port and `inspect_process` on a missing PID now print a
-   fixed message and never call mimOE — verified live (`what's on port 1?`
+   fixed message and never call mimOE: verified live (`what's on port 1?`
    -> no model call, deterministic text only).
 7. **Routing investigation** (`router.py`, `run.py`, `evals/`): added
    `--debug` to print the model's raw routing output, and
    `evals/run_routing_eval.py` + `evals/routing_questions.txt` (16 varied
    questions, reproducible) to measure model-routing accuracy without
    guessing. **Measured before changing the prompt:** the model attempted
-   valid JSON on **0/16** questions — every single response was a
+   valid JSON on **0/16** questions: every single response was a
    conversational answer to the question, never JSON. Isolated `curl` tests
    confirmed this wasn't a prompt-structure issue: even "Output exactly:
    \<json\>" with nothing else in the prompt got a rambling non-JSON answer.
@@ -134,12 +134,12 @@ throughout rather than only against mocks.
    pattern even though it didn't move accuracy, and documented the finding
    in the README rather than continuing to iterate on the prompt.
 
-## Session 2, follow-up — 2026-09-22
+## Session 2, follow-up: 2026-09-22
 
 I had flagged that `mimoe` getting the same INFO treatment as AirPlay/
 Handoff/Spotify Connect looked wrong (those are designed for LAN discovery;
-an inference endpoint being network-reachable isn't). Asked about it —
-confirmed: fix it. `KNOWN_PROCESSES` entries in `tools.py` now each carry
+an inference endpoint being network-reachable isn't). Asked about it.
+Confirmed: fix it. `KNOWN_PROCESSES` entries in `tools.py` now each carry
 their own exposed-risk level/note instead of one blanket rule. `mimoe`
 bound to localhost is still LOW; exposed, it's now MEDIUM with a note that
 its API key defaults to a shared value, so anyone on the local network
@@ -147,7 +147,7 @@ could reach and use the endpoint. Verified live: the real mimOE on this
 machine (bound to `*:8083`) now reads MEDIUM instead of INFO. All other
 known processes are unchanged.
 
-## Session 3 — model comparison (smollm-360m vs. qwen3-1.7b) — 2026-09-22
+## Session 3, model comparison (smollm-360m vs. qwen3-1.7b), 2026-09-22
 
 Loaded `qwen3-1.7b` in mimOE and ran `evals/run_routing_eval.py` /
 `evals/run_explain_eval.py` against it (16-question set, same as the
@@ -194,7 +194,7 @@ instrumentation once it's reloaded; run both evals against `qwen3-4b` once
 it's loaded. Default model (`smollm-360m` in `config.py`/`.env.example`)
 left unchanged throughout -- this is a comparison, not a migration.
 
-## Session 3, continued — qwen3-4b and the smollm-360m baseline — 2026-09-22
+## Session 3, continued: qwen3-4b and the smollm-360m baseline, 2026-09-22
 
 Ran the same 16-question evals against `qwen3-4b`, then against
 `smollm-360m` once it was reloaded (with the current /no_think + latency
@@ -232,7 +232,7 @@ hallucinations are more specific/plausible-sounding rather than less
 frequent. Default model left unchanged (`smollm-360m`) -- this was a
 comparison exercise, not a migration decision.
 
-## Session 4 — live-testing bugs, one commit each — 2026-09-22
+## Session 4: live-testing bugs, one commit each, 2026-09-22
 
 Live testing (not the eval scripts -- actual back-and-forth against the
 running CLI) surfaced 5 bugs. Fixed each as its own commit, full test suite
@@ -278,7 +278,7 @@ green after every one.
    since both have periods immediately followed by more of the same
    sentence or another digit.
 
-## Session 5 — web UI live-testing feedback — 2026-09-23
+## Session 5: web UI live-testing feedback, 2026-09-23
 
 More live testing, this time of the web UI on the `ui` branch. Also
 noticed partway through that another session was concurrently committing

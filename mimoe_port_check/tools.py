@@ -18,24 +18,24 @@ SUBPROCESS_TIMEOUT_SECONDS = 5
 # Known services table: port -> (name, note). Risk labels are derived from
 # this table plus exposure (see label_risk), never from the model.
 KNOWN_SERVICES: dict[int, tuple[str, str]] = {
-    20: ("FTP (data)", "File transfer — unencrypted by default."),
-    21: ("FTP (control)", "File transfer — unencrypted by default."),
+    20: ("FTP (data)", "File transfer, unencrypted by default."),
+    21: ("FTP (control)", "File transfer, unencrypted by default."),
     22: ("SSH", "Remote shell access."),
-    23: ("Telnet", "Unencrypted remote shell — avoid exposing."),
+    23: ("Telnet", "Unencrypted remote shell, avoid exposing."),
     25: ("SMTP", "Mail transfer."),
     53: ("DNS", "Name resolution."),
     80: ("HTTP", "Web server, unencrypted."),
     443: ("HTTPS", "Web server, TLS."),
     3000: ("Dev server", "Common local development server (Node/etc.)."),
-    3306: ("MySQL", "Database — typically should not be network-exposed."),
+    3306: ("MySQL", "Database, typically should not be network-exposed."),
     5000: ("Dev server", "Common local development server (Flask/etc.)."),
-    5432: ("PostgreSQL", "Database — typically should not be network-exposed."),
+    5432: ("PostgreSQL", "Database, typically should not be network-exposed."),
     5900: ("VNC", "Remote screen sharing."),
     6379: ("Redis", "In-memory data store, often unauthenticated by default."),
     8080: ("HTTP-alt", "Common alternate HTTP or dev server port."),
     8083: ("mimOE", "Local AI inference endpoint used by this agent."),
-    9200: ("Elasticsearch", "Search/data store — typically should not be network-exposed."),
-    27017: ("MongoDB", "Database — typically should not be network-exposed."),
+    9200: ("Elasticsearch", "Search/data store, typically should not be network-exposed."),
+    27017: ("MongoDB", "Database, typically should not be network-exposed."),
 }
 
 @dataclass(frozen=True)
@@ -54,7 +54,7 @@ def _info_process(service_name: str, note: str, path_prefixes: tuple[str, ...]) 
     return KnownProcess(
         service_name=service_name,
         local_note=f"{note} Bound to localhost only.",
-        exposed_note=f"{note} Exposed to the network — expected for this service.",
+        exposed_note=f"{note} Exposed to the network, expected for this service.",
         exposed_risk="INFO",
         path_prefixes=path_prefixes,
     )
@@ -103,7 +103,7 @@ KNOWN_PROCESSES: dict[str, KnownProcess] = {
         local_note="Local AI inference endpoint used by this agent. Bound to localhost only.",
         exposed_note=(
             "Local AI inference endpoint used by this agent. Exposed to all network "
-            "interfaces — the API key is a shared default, so anyone on the local "
+            "interfaces. The API key is a shared default, so anyone on the local "
             "network could reach and use this inference endpoint."
         ),
         exposed_risk="MEDIUM",
@@ -184,17 +184,34 @@ def _match_known_process(command: str, pid: int | None) -> KnownProcess | None:
     return None
 
 
-def label_risk(port: int, exposed_to_network: bool, command: str = "", pid: int | None = None) -> tuple[str, str, str]:
+def label_risk(
+    port: int, exposed_to_network: bool, command: str = "", pid: int | None = None, self_pid: int | None = None,
+) -> tuple[str, str, str]:
     """Return (service_name, risk_level, risk_note).
 
-    Process identity is checked first via KNOWN_PROCESSES: a recognized,
-    path-verified macOS system/app process is labeled LOW when bound to
-    localhost, and each entry defines its own network-exposed risk/note
-    (most are INFO -- e.g. AirPlay/Handoff/Spotify Connect are *meant* to be
-    reachable on the LAN -- but mimoe is MEDIUM, since it isn't). This
-    matching happens regardless of port. Falls back to the port-based
-    KNOWN_SERVICES table when nothing in KNOWN_PROCESSES matches.
+    self_pid identifies the calling process's own pid (the web UI's
+    listening port, when this is called on its behalf) -- checked first
+    since it's the most specific fact available: a matching pid means this
+    entry *is* the caller, not just something that looks like it. Only
+    trusted when not exposed to the network (this process only ever binds
+    to 127.0.0.1, so that should always hold, but a normal label is safer
+    than a false LOW if it somehow doesn't).
+
+    Otherwise, process identity is checked via KNOWN_PROCESSES: a
+    recognized, path-verified macOS system/app process is labeled LOW when
+    bound to localhost, and each entry defines its own network-exposed
+    risk/note (most are INFO -- e.g. AirPlay/Handoff/Spotify Connect are
+    *meant* to be reachable on the LAN -- but mimoe is MEDIUM, since it
+    isn't). This matching happens regardless of port. Falls back to the
+    port-based KNOWN_SERVICES table when nothing in KNOWN_PROCESSES matches.
     """
+    if self_pid is not None and pid == self_pid and not exposed_to_network:
+        return (
+            "mimoe-port-check web UI",
+            "LOW",
+            "This machine's own mimoe-port-check web UI. Bound to localhost only.",
+        )
+
     known_process = _match_known_process(command, pid)
     if known_process is not None:
         if exposed_to_network:
@@ -203,10 +220,10 @@ def label_risk(port: int, exposed_to_network: bool, command: str = "", pid: int 
 
     known = KNOWN_SERVICES.get(port)
     service_name = known[0] if known else "Unknown service"
-    base_note = known[1] if known else "Unrecognized port — not in the known-services table."
+    base_note = known[1] if known else "Unrecognized port, not in the known-services table."
 
     if exposed_to_network and port in SENSITIVE_IF_EXPOSED:
-        return service_name, "HIGH", f"{base_note} Exposed to all network interfaces — high risk."
+        return service_name, "HIGH", f"{base_note} Exposed to all network interfaces, high risk."
     if exposed_to_network and known is None:
         return service_name, "MEDIUM", f"{base_note} Also exposed to all network interfaces."
     if exposed_to_network:
@@ -249,12 +266,15 @@ def _split_addr_port(name_field: str) -> tuple[str, int | None]:
     return addr, int(port_str) if port_str.isdigit() else None
 
 
-def list_ports() -> list[PortEntry]:
+def list_ports(self_pid: int | None = None) -> list[PortEntry]:
     """List TCP ports in LISTEN state, with owning process and risk label.
+
+    self_pid, when given, is forwarded to label_risk so the caller's own
+    listening port (if any) is labeled as such -- see label_risk.
 
     UDP sockets are excluded: they have no connection state comparable to
     LISTEN, so "is this open" is ambiguous for UDP in a way that would need
-    separate handling — noted as a limitation rather than guessed at here.
+    separate handling, noted as a limitation rather than guessed at here.
     """
     # +c 0 disables lsof's COMMAND column truncation so full process names
     # (e.g. "Code Helper (Plugin)") come through instead of being cut off.
@@ -282,10 +302,10 @@ def list_ports() -> list[PortEntry]:
         command = redact_secrets(_decode_lsof_escapes(command))
         raw_rows.append((port, int(pid_str), command, address, exposed))
 
-    return _merge_dual_stack(raw_rows)
+    return _merge_dual_stack(raw_rows, self_pid)
 
 
-def _merge_dual_stack(rows: list[tuple[int, int, str, str, bool]]) -> list[PortEntry]:
+def _merge_dual_stack(rows: list[tuple[int, int, str, str, bool]], self_pid: int | None = None) -> list[PortEntry]:
     """Merge IPv4/IPv6 rows for the same (port, pid) into one PortEntry.
 
     A dual-stack process (e.g. one listening on both `*:PORT` over IPv4 and
@@ -310,7 +330,7 @@ def _merge_dual_stack(rows: list[tuple[int, int, str, str, bool]]) -> list[PortE
     entries: list[PortEntry] = []
     for port, pid in order:
         group = merged[(port, pid)]
-        service_name, risk, risk_note = label_risk(port, group["exposed"], group["command"], pid)
+        service_name, risk, risk_note = label_risk(port, group["exposed"], group["command"], pid, self_pid=self_pid)
         entries.append(
             PortEntry(
                 port=port,
@@ -377,14 +397,14 @@ class ExposureReport:
     pid: int | None = None
 
 
-def check_exposure(port: int) -> ExposureReport:
+def check_exposure(port: int, self_pid: int | None = None) -> ExposureReport:
     """Check whether a specific listening port is bound to all interfaces or localhost only."""
     if not isinstance(port, int) or isinstance(port, bool):
         raise ValueError(f"port must be an int, got {type(port).__name__}")
     if not (1 <= port <= 65535):
         raise ValueError(f"port must be between 1 and 65535, got {port}")
 
-    for entry in list_ports():
+    for entry in list_ports(self_pid=self_pid):
         if entry.port == port:
             return ExposureReport(
                 port=port,

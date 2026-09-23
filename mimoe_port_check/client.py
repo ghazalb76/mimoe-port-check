@@ -59,7 +59,7 @@ def _send_request(request_fn, url: str, config: Config, **kwargs) -> requests.Re
     except requests.exceptions.Timeout as exc:
         raise MimOETimeoutError(
             f"mimOE did not respond within {REQUEST_TIMEOUT_SECONDS}s. "
-            "The model may still be loading, or is stuck — check mimOE Studio."
+            "The model may still be loading, or is stuck. Check mimOE Studio."
         ) from exc
 
 
@@ -89,7 +89,7 @@ def chat_completion(
     """Send a non-streaming chat completion request and return the reply text.
 
     Low temperature and a capped max_tokens keep this small model's output
-    bounded — it doesn't reliably stop on its own, and left unconstrained it
+    bounded: it doesn't reliably stop on its own, and left unconstrained it
     tends to drift into unrelated rambling (observed directly while building
     this: it sometimes hallucinates Python code instead of answering).
     """

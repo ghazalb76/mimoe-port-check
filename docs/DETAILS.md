@@ -115,12 +115,12 @@ Reproduce with `python evals/run_routing_eval.py --model <model-id>` and
   `Content-Type: application/json`. Both are real CSRF defenses, not just
   omissions: a cross-origin `fetch()` with a JSON body triggers a
   preflight `OPTIONS` request first, which gets no CORS permission here,
-  so the browser blocks the real request before it's sent — and a plain
+  so the browser blocks the real request before it's sent, and a plain
   HTML `<form>` (which can fire a simple, non-preflighted cross-origin
   POST) can't set `Content-Type: application/json` in the first place.
 - Request bodies are capped at 4KB and questions at 500 characters,
   rejected before `process_question` ever runs.
 - The frontend JS only ever writes system- or model-derived text (process
   names, args, the model's explanation, warnings) via `textContent`,
-  never `innerHTML` — that data is untrusted, per the same reasoning as
+  never `innerHTML`: that data is untrusted, per the same reasoning as
   the CLI's prompt-injection note in the main README's Security section.
