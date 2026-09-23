@@ -17,7 +17,10 @@ this repo was actually built.
 - **Never commit real system output.** README, NOTES.md, tests, and evals
   must only ever use fabricated or genuinely non-identifying sample data --
   real `lsof`/`ps` output, process names, ports, PIDs, or paths from any
-  actual machine never get written to a tracked file.
+  actual machine never get written to a tracked file. The README's web UI
+  screenshot (`docs/screenshot.png`) is the one deliberate exception,
+  cropped to show only mimOE and a local test server, no identifying
+  system data.
 - **The model only picks tools and explains findings; it never computes
   risk.** Risk labels come from code (`KNOWN_SERVICES`/`KNOWN_PROCESSES` in
   `mimoe_port_check/tools.py`) and are never invented or adjusted by the

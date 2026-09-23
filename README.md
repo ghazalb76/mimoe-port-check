@@ -4,6 +4,8 @@ A small local security-check agent: it inspects listening ports and processes on
 
 ![mimoe-port-check web UI](docs/screenshot.png)
 
+*Web UI on qwen3-1.7b. The screenshot shows only mimOE and a local test server, no identifying system data.*
+
 *Same agent underneath the CLI and the web UI. CLI sample transcript: [docs/DETAILS.md](docs/DETAILS.md#sample-transcript).*
 
 ## Key findings
