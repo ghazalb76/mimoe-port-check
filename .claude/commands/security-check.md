@@ -12,7 +12,7 @@ decisions"):
    path, or specific port/pid tied to a real running process.
 2. **Redaction tests exist and pass.** Confirm `tests/test_tools.py` still
    covers `redact_secrets()` (passwords, tokens, API keys, `user:pass@host`
-   connection strings), and run `pytest tests/test_tools.py`.
+   connection strings), and run `python3 -m pytest tests/test_tools.py`.
 3. **Localhost guards are intact.**
    - `mimoe_port_check/config.py`: `_assert_localhost` / `NonLocalEndpointError`
      still rejects a non-localhost `MIMOE_BASE_URL`, with no override flag.

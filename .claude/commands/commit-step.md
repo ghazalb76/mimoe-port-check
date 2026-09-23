@@ -1,7 +1,7 @@
 ---
 description: Run tests; if green, commit this logical unit with a clear message
 ---
-1. Run the full test suite: `pytest`.
+1. Run the full test suite: `python3 -m pytest`.
 2. If anything fails, stop here and report the failures -- don't commit.
 3. If green, `git status`/`git diff` to see what's actually staged/changed.
 4. Group related work into one commit per logical unit (a feature, a fix
