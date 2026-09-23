@@ -12,7 +12,7 @@ The core agent is plain HTTP calls to mimOE in a few small files; the web UI and
 
 ## Key findings
 
-- SmolLM2-360M scored 0/16 on routing, so the design never depends on the model to work correctly.
+- SmolLM2-360M routed 0/16 questions on its own, and the keyword fallback got 14/16 right, so the design never depends on the model for routing.
 - Qwen3's `<think>` reasoning block consumed the entire token budget before it could answer. Fixed with a literal `/no_think` directive.
 - qwen3-4b's hallucinations are more specific (fabricated port numbers) than qwen3-1.7b's, which makes them easier to believe.
 - The agent flags mimOE's own endpoint as network-exposed (MEDIUM) and notes that its API key is a shared default.
@@ -95,7 +95,7 @@ xychart-beta
     title "Routing accuracy by model (16 questions)"
     x-axis [smollm-360m, qwen3-1.7b, qwen3-4b]
     y-axis "Accuracy (%)" 0 --> 100
-    bar [0, 88, 94]
+    bar [0, 75, 94]
 ```
 
 ```mermaid
@@ -103,15 +103,15 @@ xychart-beta
     title "Avg explain latency by model (seconds)"
     x-axis [smollm-360m, qwen3-1.7b, qwen3-4b]
     y-axis "Latency (s)" 0 --> 3
-    bar [1.3, 1.5, 2.7]
+    bar [1.4, 1.3, 2.7]
 ```
 
-- qwen3-1.7b gets most of the accuracy gain at a small latency cost. qwen3-4b roughly doubles latency for another 6 points.
+- qwen3-1.7b gets most of the accuracy gain at a small latency cost. qwen3-4b roughly doubles latency for another 19 points, though its numbers predate the routing prompt change.
 
 | Model | Routing accuracy (16 Qs) | Avg latency (route / explain) | Explain quality |
 |---|---|---|---|
-| `smollm-360m` | 0% (fallback does the routing) | ~410ms / ~1.3s | Loops sentences; occasionally fabricates a finding |
-| `qwen3-1.7b` | 88% | ~680ms / ~1.5s | Coherent; one invented risk framing observed |
+| `smollm-360m` | 0% (fallback does the routing) | ~550ms / ~1.4s | Loops sentences; occasionally fabricates a finding |
+| `qwen3-1.7b` | 75% | ~720ms / ~1.3s | Coherent; one invented risk framing observed |
 | `qwen3-4b` | 94% | ~1.35s / ~2.7s | Coherent; hallucinations more specific (fabricated ports) |
 
 - The agent auto-selects a model at startup, preferring `qwen3-1.7b`, then `qwen3-4b`, then `smollm-360m`. `MIMOE_MODEL` in `.env` overrides this.
