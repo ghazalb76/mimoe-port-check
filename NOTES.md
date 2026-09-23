@@ -9,7 +9,7 @@ Written as we go so the final README section is honest, not reconstructed after 
 - Confirmed mimOE is running and reachable: `curl` to
   `http://localhost:8083/mimik-ai/openai/v1/chat/completions` returned HTTP 200.
 - Observed firsthand that `smollm-360m` rambles/loses coherence on a plain "say hello"
-  prompt. This is real evidence (not just the assignment brief's claim) for why the
+  prompt. This is my own firsthand evidence for why the
   design needs a keyword-based fallback router rather than trusting the model's JSON
   tool-choice output.
 
@@ -27,13 +27,13 @@ Written as we go so the final README section is honest, not reconstructed after 
 
 **Changed/rejected:** none yet.
 
-**Built next (same session), each landed as its own commit:**
+**Built next (same session), each as its own step:**
 1. `client.py`: thin `requests`-based HTTP client for the OpenAI-compatible
    `/chat/completions` endpoint. Asked Claude to distinguish connection errors
    ("is mimOE running?"), timeouts, and malformed response bodies with separate
-   exception types and actionable messages, per the assignment's explicit list of
-   required error cases. Verified myself: ran `pytest tests/test_client.py`
-   (6 tests, mocked `requests.post`, no real network call needed for the test
+   exception types and actionable messages, per my own requirement that
+   each of those failure cases be handled separately. Verified myself: ran
+   `pytest tests/test_client.py` (6 tests, mocked `requests.post`, no real network call needed for the test
    suite itself).
 2. `tools.py`: `list_ports`, `inspect_process`, `check_exposure`, the
    known-services table, and `redact_secrets`. Before Claude wrote the parser, I
@@ -74,7 +74,7 @@ patterns to this model. Went with a shorter, more direct system prompt instead.
 ## Session 2: 2026-09-22
 
 Test run against a real (non-fake) session surfaced 7 issues; fixed each as
-its own commit, running the full test suite after every one. mimOE was
+its own step, running the full test suite after every one. mimOE was
 confirmed reachable (`curl` -> 200) at the start, so live testing was done
 throughout rather than only against mocks.
 
@@ -124,7 +124,7 @@ throughout rather than only against mocks.
    meaningfully different structure, not just "more of the same wording") and
    re-measured: **1/16** attempted JSON, and that one attempt just echoed the
    last few-shot example's answer verbatim instead of reasoning about the new
-   question -- 0% correctness among model-routed answers, both before and
+   question. 0% correctness among model-routed answers, both before and
    after. Conclusion: this is a genuine capability ceiling of
    SmolLM2-360M at this size, not a fixable prompt-wording problem, and no
    further prompt tuning was attempted per the "report before changing
@@ -153,7 +153,7 @@ Loaded `qwen3-1.7b` in mimOE and ran `evals/run_routing_eval.py` /
 `evals/run_explain_eval.py` against it (16-question set, same as the
 smollm-360m baseline from Session 2). Note: mimOE only keeps one model
 loaded at a time, so this and the smollm baseline weren't measured
-back-to-back with identical instrumentation -- smollm's latency numbers
+back-to-back with identical instrumentation: smollm's latency numbers
 still need a re-run once it's reloaded. Per instruction, results below are
 summarized/paraphrased; no raw process names, paths, or command lines are
 included, even though the eval scripts print real local system data to the
@@ -162,7 +162,7 @@ terminal when run.
 **First run failed at 0/16, same as smollm, but for a different reason.**
 Debug output showed qwen3-1.7b emitting a long `<think>...</think>`
 reasoning block before answering, and the existing `max_tokens=60` for
-routing was entirely consumed by that reasoning -- confirmed by raising
+routing was entirely consumed by that reasoning, confirmed by raising
 `max_tokens` well past 60 in isolated `curl` tests and watching it still be
 mid-thought, never reaching an answer. Found that Qwen3 recognizes a literal
 `/no_think` directive to skip reasoning; added it to both
@@ -182,7 +182,7 @@ otherwise print to the user as if it were the answer.
   notable finding and gave a sensible suggestion, across most questions.
   One flaw observed: for a process-inspection result that carried no risk
   label at all, the model added an unprompted, alarmist "this may be a
-  security threat" framing not grounded in anything in the data -- a real
+  security threat" framing not grounded in anything in the data, a real
   instance of inventing a risk assessment despite the prompt explicitly
   saying not to, just a different failure mode than smollm's (occasional
   fabrication vs. constant repetition/incoherence). Average explain request
@@ -192,7 +192,7 @@ otherwise print to the user as if it were the answer.
 **Still to do:** re-measure smollm-360m's latency with the current
 instrumentation once it's reloaded; run both evals against `qwen3-4b` once
 it's loaded. Default model (`smollm-360m` in `config.py`/`.env.example`)
-left unchanged throughout -- this is a comparison, not a migration.
+left unchanged throughout. This is a comparison, not a migration.
 
 ## Session 3, continued: qwen3-4b and the smollm-360m baseline, 2026-09-22
 
@@ -208,19 +208,19 @@ Summarized/paraphrased below, no raw system data.
 - **qwen3-4b explain step:** consistently coherent and on-topic, same as
   qwen3-1.7b, but with a more concerning failure mode: for the
   process-inspection question, it fabricated specific technical details
-  (port numbers) that don't appear anywhere in the underlying data --
+  (port numbers) that don't appear anywhere in the underlying data:
   a more concrete, specific-sounding hallucination than qwen3-1.7b's vaguer
   invented framing, and arguably easier to mistake for a real finding
   because it reads so smoothly. Average explain latency ~2.7s.
 - **smollm-360m baseline (re-measured):** routing matched the earlier
-  finding exactly -- 1/16 attempted JSON, 0 correct, 15/16 fallback, 0%
+  finding exactly: 1/16 attempted JSON, 0 correct, 15/16 fallback, 0%
   overall. Average routing latency ~410ms, notably faster than either Qwen
   model. Explain step was the weakest of the three: looped the same
   sentence verbatim multiple times in one response, fabricated an entirely
   extra finding (a second port/pid not present anywhere in the real data)
   in one response, and gave generic off-topic technical advice (unrelated
   shell command suggestions) instead of explaining the actual finding in
-  another. Average explain latency ~1.3s -- not dramatically faster than
+  another. Average explain latency ~1.3s, not dramatically faster than
   qwen3-1.7b's ~1.5s despite being a much smaller model, likely because its
   repetitive output still fills most of the token budget.
 
@@ -229,18 +229,18 @@ entirely on the keyword fallback (routing) and produces the least reliable
 explanations. Both Qwen models route well; qwen3-4b is slightly more
 accurate but ~2x the latency of qwen3-1.7b on both steps, and its
 hallucinations are more specific/plausible-sounding rather than less
-frequent. Default model left unchanged (`smollm-360m`) -- this was a
+frequent. Default model left unchanged (`smollm-360m`). This was a
 comparison exercise, not a migration decision.
 
-## Session 4: live-testing bugs, one commit each, 2026-09-22
+## Session 4: live-testing bugs, one step each, 2026-09-22
 
-Live testing (not the eval scripts -- actual back-and-forth against the
-running CLI) surfaced 5 bugs. Fixed each as its own commit, full test suite
+Live testing (not the eval scripts but actual back-and-forth against the
+running CLI) surfaced 5 bugs. Fixed each as its own step, full test suite
 green after every one.
 
 1. **Ungrounded tool arguments** (`router.py`): the model parroted its last
    few-shot example's answer (`check_exposure`/port 5432) verbatim for both
-   "tell me about process abc" and "what's the weather?" -- syntactically
+   "tell me about process abc" and "what's the weather?": syntactically
    valid JSON, but not actually about the question asked.
    `_args_grounded_in_question` now requires a chosen port/pid's literal
    digits to appear somewhere in the question; otherwise `route()` falls
@@ -249,7 +249,7 @@ green after every one.
    against a fixed keyword set; if none match, `resolve_route` returns an
    `off_topic` sentinel that `main()` intercepts before calling the model or
    any tool, printing a short capability message. Verified the keyword set
-   against all 16 questions in `evals/routing_questions.txt` -- none
+   against all 16 questions in `evals/routing_questions.txt`: none
    misclassified.
 3. **Invalid input** (`agent.py`): "process abc" mentions "process" (still
    on-topic) but has no digits at all, and previously fell through to
@@ -261,7 +261,7 @@ green after every one.
    misfire on "process id 900"-style phrasing.
 4. **Contradiction check** (`agent.py`): a real explanation read "It is not
    exposed to all network interfaces. It is not exposed to any network
-   interfaces." for a summary that said MEDIUM/exposed -- the opposite of
+   interfaces." for a summary that said MEDIUM/exposed, the opposite of
    the findings. Tricky part: the explanation contains "not exposed" twice
    and no standalone "exposed" at all, so a naive substring check for
    "exposed" would have wrongly concluded it *agreed* with the summary.
@@ -273,7 +273,7 @@ green after every one.
    to its last complete sentence, so a mid-sentence cutoff (observed live,
    trailing off as "...on port 8") doesn't get shown. Punctuation only
    counts as a sentence end when followed by whitespace or the end of the
-   text -- without that, a naive "last '.' anywhere" search would cut
+   text: without that, a naive "last '.' anywhere" search would cut
    inside an IP address like `127.0.0.1` or right after "e.g." mid-sentence,
    since both have periods immediately followed by more of the same
    sentence or another digit.
@@ -283,13 +283,13 @@ green after every one.
 More live testing, this time of the web UI on the `ui` branch. Also
 noticed partway through that another session was concurrently committing
 a model-picker feature (dropdown to switch `MIMOE_MODEL` at runtime,
-`POST /api/model`) to the same branch -- unrelated to this feedback, and
+`POST /api/model`) to the same branch, unrelated to this feedback, and
 folded in rather than untangled, since everything tested compatible.
 
 1. **Explanation repetition**: smollm-360m looped the same sentence up to
    8 times in one response (same underlying issue documented earlier, just
    observed again via the web UI this time). `dedupe_consecutive_sentences`
-   collapses an immediately-repeated sentence to one occurrence -- wired
+   collapses an immediately-repeated sentence to one occurrence, wired
    into `process_question`, so both the CLI and the web UI get it for
    free through the shared pipeline.
 2. **Layout**: the web UI showed the findings table before the
@@ -298,23 +298,60 @@ folded in rather than untangled, since everything tested compatible.
    preformatted text, never sent over the JSON API). Extracted
    `list_ports_summary()`, added it to the API response, and reordered
    the page to summary + explanation first, findings table below. CLI
-   terminal output unchanged -- this was UI-layout-specific feedback.
+   terminal output unchanged. This was UI-layout-specific feedback.
 3. **Sort + collapse**: findings are now sorted HIGH/MEDIUM/LOW/INFO
-   (client-side), with INFO rows (AirPlay, Handoff, etc. -- expected/
+   (client-side), with INFO rows (AirPlay, Handoff, etc., expected/
    benign) collapsed behind a "Show N expected services" toggle so they
    don't bury the notable rows.
 4. **Own port unrecognized**: the web UI's own listening port showed up
    as "Unknown service" in its own findings. Since the port number is
    configurable (`--port`), this couldn't be a static table entry; instead
    `_relabel_own_port()` matches on the server's actual bound port AND
-   `os.getpid()` together (port alone isn't enough -- a different process
+   `os.getpid()` together (port alone isn't enough: a different process
    could coincidentally sit on the same port number) and only relabels to
    LOW when confirmed not exposed to the network, leaving the normal risk
    label alone if that's ever not the case. Needed a small `tools.py`
    addition: `ExposureReport` didn't carry a `pid` field at all, even
    though `check_exposure()` already had it available internally from the
-   `list_ports()` lookup it does -- added the field and threaded it
+   `list_ports()` lookup it does, added the field and threaded it
    through, which also unlocked pid-matching for `check_exposure`
    findings, not just `list_ports`.
 
-_(continue appending entries below as work progresses)_
+## Session 6: final changes, 2026-09-23
+
+Later work that supersedes parts of the entries above. The entries
+themselves are left as written. Also, the step-by-step history described
+above was later consolidated into a smaller set of milestone commits, so
+`git log` no longer shows one commit per step.
+
+- **Model default:** "Default model left unchanged (`smollm-360m`)" no
+  longer holds. `MIMOE_MODEL` is now unset by default, and the agent
+  auto-selects from whatever is loaded in mimOE, preferring `qwen3-1.7b`,
+  then `qwen3-4b`, then `smollm-360m`. Setting `MIMOE_MODEL` still
+  overrides this.
+- **Model-picker dropdown removed:** the dropdown from Session 5 is gone.
+  mimOE only reports what is currently loaded and there is no reliable way
+  from here to trigger a load, so it had nothing to switch to. Switching
+  models stays a mimOE Studio task.
+- **Own-port labeling moved:** the Session 5 `_relabel_own_port()` step in
+  the web layer was folded into `tools.label_risk` (via a `self_pid`
+  parameter), so risk labels have one source of truth again. Behavior is
+  the same: port and PID must both match, and only a localhost-bound port
+  is labeled LOW.
+- **Markdown stripping:** the model sometimes returns markdown in its
+  explanation. It is now stripped before display, since the UI renders plain
+  text as an XSS safeguard.
+- **Contradiction-check false positive:** advice phrasing such as "ensure
+  they're not exposed" was being read as a claim that the service is not
+  exposed, and flagged against a summary saying it was. The check now
+  matches claim-style phrasing only and skips negations that follow advice
+  verbs.
+- **Architecture diagram:** the ASCII diagram became a Mermaid flowchart,
+  then a static SVG (`docs/architecture.svg`), so it renders the same
+  everywhere.
+- **README pass:** reworded to mirror the assignment's wording, with
+  "Approach" and "Framework and tooling choices" as separate sections, plus
+  an endpoint-exploration section, a web UI screenshot, and a few accuracy
+  and voice fixes.
+- **Quick start:** commands now use `python3` (and `python3 -m pytest`) to
+  match how the venv is created.

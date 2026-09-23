@@ -58,7 +58,7 @@ Full table (16-question routing eval + explain-step spot checks):
 
 | Model | Size | Routing accuracy (16 Qs) | Avg routing latency | Explain-step quality | Avg explain latency |
 |---|---|---|---|---|---|
-| `smollm-360m` | 360M | 0% correct via model (1/16 attempted, 0 correct; 100% effectively via keyword fallback) | ~410ms | Weakest of the three: frequently loops the same sentence verbatim, sometimes fabricates an entirely nonexistent second finding (an extra port/pid not in the data), and occasionally gives generic off-topic technical advice (e.g. suggesting unrelated shell commands) instead of explaining the actual finding | ~1.3s |
+| `smollm-360m` | 360M | 0% correct via model (1/16 attempted, 0 correct; 15/16 via keyword fallback) | ~410ms | Weakest of the three: frequently loops the same sentence verbatim, sometimes fabricates an entirely nonexistent second finding (an extra port/pid not in the data), and occasionally gives generic off-topic technical advice (e.g. suggesting unrelated shell commands) instead of explaining the actual finding | ~1.3s |
 | `qwen3-1.7b` | 1.7B | 88% correct via model (14/16; 1 wrong, 1 fallback) | ~680ms | Coherent, grounded 2-4 sentence summaries referencing the actual finding and a sensible suggestion, on most questions; one observed case invented an unsupported "security threat" framing for a result that carried no risk label, despite the prompt saying not to invent risk assessments | ~1.5s |
 | `qwen3-4b` | 4B | 94% correct via model (15/16; 1 wrong, 0 fallback) | ~1.35s | Similarly coherent and consistent; one observed case fabricated specific technical details (port numbers) that did not appear anywhere in the underlying data: a more concrete, specific-sounding hallucination than qwen3-1.7b's, even though the prose read smoothly | ~2.7s |
 
@@ -70,11 +70,11 @@ slightly more accurate (94% vs. 88%) but at roughly 2x the latency of
 `qwen3-1.7b` on both steps, and its hallucinations run more
 specific/plausible-sounding (fabricated port numbers) rather than less
 frequent, arguably a worse failure mode to trust at a glance than
-`qwen3-1.7b`'s vaguer invented framing. `smollm-360m` is last on the list,
-not because it's fast (it is, ~410ms vs. ~680ms+), but because it ships
-with mimOE by default and something has to be the fallback when neither
-Qwen model happens to be loaded: its routing is carried entirely by the
-keyword fallback, and its explanations are the least reliable of the three.
+`qwen3-1.7b`'s vaguer invented framing. `smollm-360m` is last because its
+routing depends on the keyword fallback and its explanations are the least
+reliable of the three. It stays in the list because it ships with mimOE, so
+it's the fallback when no Qwen model is loaded. It is the fastest, at ~410ms
+routing.
 The grounding-check warning below the explain step exists precisely because
 none of these three models is hallucination-free.
 
@@ -90,8 +90,8 @@ doesn't change `smollm-360m`'s behavior. `router.strip_think_blocks` also
 strips any `<think>` block that does slip through before anything is
 displayed, as a second layer.
 
-Reproduce with `python evals/run_routing_eval.py --model <model-id>` and
-`python evals/run_explain_eval.py --model <model-id>`, see
+Reproduce with `python3 evals/run_routing_eval.py --model <model-id>` and
+`python3 evals/run_explain_eval.py --model <model-id>`, see
 [evals/routing_questions.txt](../evals/routing_questions.txt) for the exact
 16 questions.
 
@@ -108,9 +108,8 @@ Reproduce with `python evals/run_routing_eval.py --model <model-id>` and
   the standard defense against DNS rebinding, where a page on an
   attacker-controlled domain gets your browser to connect to `127.0.0.1`
   while still sending that domain in the `Host` header.
-- `Origin`, when a browser sends one, must be exactly this server's own
-  origin; absent is allowed (non-browser clients and same-origin `fetch()`
-  calls don't send one).
+- `Origin`, when present, must exactly match this server's own origin.
+  Absent is allowed because non-browser clients like `curl` don't send one.
 - No CORS headers, ever, and the API only accepts
   `Content-Type: application/json`. Both are real CSRF defenses, not just
   omissions: a cross-origin `fetch()` with a JSON body triggers a
@@ -123,4 +122,4 @@ Reproduce with `python evals/run_routing_eval.py --model <model-id>` and
 - The frontend JS only ever writes system- or model-derived text (process
   names, args, the model's explanation, warnings) via `textContent`,
   never `innerHTML`: that data is untrusted, per the same reasoning as
-  the CLI's prompt-injection note in the main README's Security section.
+  the "untrusted text" note in the main README's Security section.
