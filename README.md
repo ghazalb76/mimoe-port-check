@@ -2,7 +2,7 @@
 
 A small local security-check agent: it inspects listening ports and processes on this machine only, labels risk in code, never the model, and asks a model running in mimOE to explain the findings in plain language. This data is sensitive, so the agent refuses to run against anything but a localhost mimOE endpoint.
 
-The core agent is plain HTTP calls to mimOE in a few small files; the web UI, evals, and guardrails are extras built on the same core.
+The core agent is plain HTTP calls to mimOE in a few small files; the web UI and evals are extras built on the same core.
 
 ![mimoe-port-check web UI](docs/screenshot.png)
 
@@ -28,7 +28,7 @@ The core agent is plain HTTP calls to mimOE in a few small files; the web UI, ev
 
 **CLI:**
 
-0. Open mimOE Studio, go to AI Models, load `qwen3-1.7b` (or any of the three).
+First, open mimOE Studio, go to AI Models, and load `qwen3-1.7b` (or any of the three).
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
@@ -68,7 +68,7 @@ curl http://localhost:8083/mimik-ai/openai/v1/chat/completions \
 What curling it first, before writing any code, taught me:
 
 - It's an OpenAI-compatible `/chat/completions` endpoint, so a plain `requests` POST is enough, no SDK needed.
-- `/v1/models` lists whatever's currently loaded; mimOE only keeps one model loaded at a time, so switching in Studio unloads the previous one.
+- `/mimik-ai/openai/v1/models` lists whatever's currently loaded; mimOE only keeps one model loaded at a time, so switching in Studio unloads the previous one.
 - The API key defaults to a shared, publicly-documented value (`1234`), not a secret, which is exactly why an exposed mimOE endpoint is a real finding, not just noise.
 - Qwen3 is a reasoning model: it emits a `<think>` block by default and needs a literal `/no_think` directive to skip straight to the answer.
 
@@ -82,7 +82,7 @@ What curling it first, before writing any code, taught me:
 ## Framework and tooling choices
 
 - No agent framework (LangChain, etc.). A framework's function-calling layer wouldn't fix the model-reliability problem above, and mimOE speaks one OpenAI-compatible endpoint, so a raw `requests` POST keeps every request and response visible without an extra abstraction layer.
-- `python-dotenv` for `.env` loading: the one pinned dependency, worth it for the ergonomics over manual `os.environ` parsing.
+- `python-dotenv` for `.env` loading: one of two pinned dependencies (alongside `requests`), worth it for the ergonomics over manual `os.environ` parsing.
 
 ## How the components connect
 
