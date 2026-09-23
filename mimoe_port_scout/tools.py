@@ -104,6 +104,11 @@ def _run(args: list[str]) -> str:
         )
     except FileNotFoundError as exc:
         raise RuntimeError(f"Command not found: {args[0]}") from exc
+    except PermissionError as exc:
+        raise RuntimeError(
+            f"Permission denied running '{args[0]}'. Check that it's executable "
+            "and that this terminal has the necessary permissions."
+        ) from exc
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"Command timed out: {' '.join(args)}") from exc
     return result.stdout

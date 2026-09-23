@@ -28,8 +28,20 @@ class MimOEResponseError(MimOEError):
     """mimOE responded, but with an error status or unexpected body."""
 
 
-def chat_completion(config: Config, messages: list[dict]) -> str:
-    """Send a non-streaming chat completion request and return the reply text."""
+def chat_completion(
+    config: Config,
+    messages: list[dict],
+    *,
+    temperature: float = 0.2,
+    max_tokens: int = 300,
+) -> str:
+    """Send a non-streaming chat completion request and return the reply text.
+
+    Low temperature and a capped max_tokens keep this small model's output
+    bounded — it doesn't reliably stop on its own, and left unconstrained it
+    tends to drift into unrelated rambling (observed directly while building
+    this: it sometimes hallucinates Python code instead of answering).
+    """
     url = f"{config.base_url.rstrip('/')}/chat/completions"
     headers = {
         "Authorization": f"Bearer {config.api_key}",
@@ -38,6 +50,8 @@ def chat_completion(config: Config, messages: list[dict]) -> str:
     payload = {
         "model": config.model,
         "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
         "stream": False,
     }
 

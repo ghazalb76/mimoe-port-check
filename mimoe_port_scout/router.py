@@ -64,7 +64,7 @@ def route(question: str, config: Config) -> Route:
     ]
 
     try:
-        raw = chat_completion(config, messages)
+        raw = chat_completion(config, messages, temperature=0.0, max_tokens=60)
         tool, args = _parse_and_validate(raw)
         return Route(tool=tool, args=args, source="model")
     except RoutingError:
