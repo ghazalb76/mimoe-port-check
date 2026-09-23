@@ -3,13 +3,13 @@ from unittest.mock import Mock, patch
 import pytest
 import requests
 
-from mimoe_port_scout.client import (
+from mimoe_port_check.client import (
     MimOEConnectionError,
     MimOEResponseError,
     MimOETimeoutError,
     chat_completion,
 )
-from mimoe_port_scout.config import Config
+from mimoe_port_check.config import Config
 
 CONFIG = Config(
     base_url="http://localhost:8083/mimik-ai/openai/v1",
@@ -27,7 +27,7 @@ def _mock_response(status_code=200, json_body=None, text=""):
     return resp
 
 
-@patch("mimoe_port_scout.client.requests.post")
+@patch("mimoe_port_check.client.requests.post")
 def test_chat_completion_success(mock_post):
     mock_post.return_value = _mock_response(
         200,
@@ -43,7 +43,7 @@ def test_chat_completion_success(mock_post):
     assert headers["Authorization"] == "Bearer 1234"
 
 
-@patch("mimoe_port_scout.client.requests.post")
+@patch("mimoe_port_check.client.requests.post")
 def test_chat_completion_connection_error(mock_post):
     mock_post.side_effect = requests.exceptions.ConnectionError()
 
@@ -51,7 +51,7 @@ def test_chat_completion_connection_error(mock_post):
         chat_completion(CONFIG, [{"role": "user", "content": "hi"}])
 
 
-@patch("mimoe_port_scout.client.requests.post")
+@patch("mimoe_port_check.client.requests.post")
 def test_chat_completion_timeout(mock_post):
     mock_post.side_effect = requests.exceptions.Timeout()
 
@@ -59,7 +59,7 @@ def test_chat_completion_timeout(mock_post):
         chat_completion(CONFIG, [{"role": "user", "content": "hi"}])
 
 
-@patch("mimoe_port_scout.client.requests.post")
+@patch("mimoe_port_check.client.requests.post")
 def test_chat_completion_404(mock_post):
     mock_post.return_value = _mock_response(404, text="not found")
 
@@ -67,7 +67,7 @@ def test_chat_completion_404(mock_post):
         chat_completion(CONFIG, [{"role": "user", "content": "hi"}])
 
 
-@patch("mimoe_port_scout.client.requests.post")
+@patch("mimoe_port_check.client.requests.post")
 def test_chat_completion_401(mock_post):
     mock_post.return_value = _mock_response(401, text="unauthorized")
 
@@ -75,7 +75,7 @@ def test_chat_completion_401(mock_post):
         chat_completion(CONFIG, [{"role": "user", "content": "hi"}])
 
 
-@patch("mimoe_port_scout.client.requests.post")
+@patch("mimoe_port_check.client.requests.post")
 def test_chat_completion_malformed_body(mock_post):
     mock_post.return_value = _mock_response(200, {"unexpected": "shape"})
 

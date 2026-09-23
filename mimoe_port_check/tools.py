@@ -38,9 +38,57 @@ KNOWN_SERVICES: dict[int, tuple[str, str]] = {
     27017: ("MongoDB", "Database — typically should not be network-exposed."),
 }
 
+# Known macOS system/app processes: lowercased command name -> (service
+# label, note, expected executable path prefixes). A command name alone is
+# spoofable (any process can set its own argv[0]/name), so a match here is
+# only trusted when the process's actual executable path (from `ps -o
+# comm=`, which the process can't fake) starts with one of the expected
+# prefixes -- see _match_known_process. An empty prefix tuple means the
+# process has no fixed install location to check (e.g. mimoe runs from
+# wherever the user set it up) and the name match is trusted on its own.
+KNOWN_PROCESSES: dict[str, tuple[str, str, tuple[str, ...]]] = {
+    "rapportd": (
+        "Handoff/Continuity",
+        "Apple continuity between your devices.",
+        ("/usr/libexec/rapportd",),
+    ),
+    "controlcenter": (
+        "AirPlay Receiver",
+        "macOS Control Center's AirPlay receiver (commonly ports 5000/7000).",
+        ("/System/Library/CoreServices/ControlCenter.app/",),
+    ),
+    "spotify": (
+        "Spotify Connect",
+        "Spotify's local device-discovery service.",
+        ("/Applications/Spotify.app/",),
+    ),
+    "code helper": (
+        "VS Code",
+        "A VS Code helper process (extension host, GPU, renderer, etc.).",
+        (
+            "/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper",
+            "/Applications/Visual Studio Code - Insiders.app/Contents/Frameworks/Code Helper",
+        ),
+    ),
+    "mimoe": (
+        "mimOE",
+        "Local AI inference endpoint used by this agent.",
+        (),
+    ),
+}
+
 SENSITIVE_IF_EXPOSED = {21, 22, 23, 3306, 5432, 5900, 6379, 9200, 27017}
 
 ALL_INTERFACES_MARKERS = {"*", "0.0.0.0", "::", "[::]"}
+
+# lsof escapes characters that would otherwise break whitespace-delimited
+# column parsing (most commonly a space in a command name) as \xHH.
+_LSOF_ESCAPE_PATTERN = re.compile(r"\\x([0-9A-Fa-f]{2})")
+
+
+def _decode_lsof_escapes(text: str) -> str:
+    """Decode lsof's \\xHH escapes (e.g. \\x20 for a space) back to characters."""
+    return _LSOF_ESCAPE_PATTERN.sub(lambda m: chr(int(m.group(1), 16)), text)
 
 # Redaction patterns for likely secrets in command lines / process args.
 _REDACTION_PATTERNS = [
@@ -74,8 +122,51 @@ class PortEntry:
     risk_note: str
 
 
-def label_risk(port: int, exposed_to_network: bool) -> tuple[str, str, str]:
-    """Return (service_name, risk_level, risk_note) for a port, from the known-services table."""
+def _fetch_exe_path(pid: int) -> str | None:
+    """Full executable path for a PID (from `ps -o comm=`, which on macOS
+    reports the full path, not just a short name). Used to verify a
+    KNOWN_PROCESSES name match isn't spoofed: a process can name itself
+    anything, but it can't fake the path of the binary that's actually
+    running."""
+    output = _run(["ps", "-p", str(pid), "-o", "comm="])
+    path = output.strip()
+    return path or None
+
+
+def _match_known_process(command: str, pid: int | None) -> tuple[str, str] | None:
+    """Return (service_name, note) if `command` matches a KNOWN_PROCESSES
+    entry and, when that entry has expected path prefixes, the process's
+    real executable path confirms it. A name match with a failed path check
+    falls through to the port-based table instead of being trusted."""
+    normalized = command.strip().lower()
+    for name, (service_name, note, path_prefixes) in KNOWN_PROCESSES.items():
+        if normalized != name and not normalized.startswith(name):
+            continue
+        if path_prefixes:
+            exe_path = _fetch_exe_path(pid) if pid is not None else None
+            if not exe_path or not exe_path.startswith(path_prefixes):
+                continue
+        return service_name, note
+    return None
+
+
+def label_risk(port: int, exposed_to_network: bool, command: str = "", pid: int | None = None) -> tuple[str, str, str]:
+    """Return (service_name, risk_level, risk_note).
+
+    Process identity is checked first via KNOWN_PROCESSES: a recognized,
+    path-verified macOS system/app process is labeled LOW (localhost) or
+    INFO (network-exposed but expected, e.g. AirPlay/Handoff/Spotify
+    Connect broadcasting on the LAN) regardless of port -- never MEDIUM or
+    HIGH, since these are legitimate services whose port is incidental.
+    Falls back to the port-based KNOWN_SERVICES table otherwise.
+    """
+    known_process = _match_known_process(command, pid)
+    if known_process is not None:
+        service_name, note = known_process
+        if exposed_to_network:
+            return service_name, "INFO", f"{note} Exposed to the network — expected for this service."
+        return service_name, "LOW", f"{note} Bound to localhost only."
+
     known = KNOWN_SERVICES.get(port)
     service_name = known[0] if known else "Unknown service"
     base_note = known[1] if known else "Unrecognized port — not in the known-services table."
@@ -131,8 +222,10 @@ def list_ports() -> list[PortEntry]:
     LISTEN, so "is this open" is ambiguous for UDP in a way that would need
     separate handling — noted as a limitation rather than guessed at here.
     """
-    output = _run(["lsof", "-i", "-P", "-n"])
-    entries: list[PortEntry] = []
+    # +c 0 disables lsof's COMMAND column truncation so full process names
+    # (e.g. "Code Helper (Plugin)") come through instead of being cut off.
+    output = _run(["lsof", "-i", "-P", "-n", "+c", "0"])
+    raw_rows: list[tuple[int, int, str, str, bool]] = []
 
     for line in output.splitlines()[1:]:  # skip header
         parts = line.split(None, 8)
@@ -152,16 +245,46 @@ def list_ports() -> list[PortEntry]:
             continue
 
         exposed = address in ALL_INTERFACES_MARKERS
-        service_name, risk, risk_note = label_risk(port, exposed)
+        command = redact_secrets(_decode_lsof_escapes(command))
+        raw_rows.append((port, int(pid_str), command, address, exposed))
 
+    return _merge_dual_stack(raw_rows)
+
+
+def _merge_dual_stack(rows: list[tuple[int, int, str, str, bool]]) -> list[PortEntry]:
+    """Merge IPv4/IPv6 rows for the same (port, pid) into one PortEntry.
+
+    A dual-stack process (e.g. one listening on both `*:PORT` over IPv4 and
+    `[::]:PORT` over IPv6) shows up as two separate lsof lines for what a
+    user experiences as one listening service. Merging keeps `list_ports`
+    output at one row per actual service, and treats the port as exposed if
+    *either* stack is bound to all interfaces.
+    """
+    merged: dict[tuple[int, int], dict] = {}
+    order: list[tuple[int, int]] = []
+
+    for port, pid, command, address, exposed in rows:
+        key = (port, pid)
+        if key not in merged:
+            merged[key] = {"command": command, "addresses": [], "exposed": False}
+            order.append(key)
+        group = merged[key]
+        if address not in group["addresses"]:
+            group["addresses"].append(address)
+        group["exposed"] = group["exposed"] or exposed
+
+    entries: list[PortEntry] = []
+    for port, pid in order:
+        group = merged[(port, pid)]
+        service_name, risk, risk_note = label_risk(port, group["exposed"], group["command"], pid)
         entries.append(
             PortEntry(
                 port=port,
                 protocol="tcp",
-                local_address=address,
-                pid=int(pid_str),
-                command=redact_secrets(command),
-                exposed_to_network=exposed,
+                local_address=", ".join(group["addresses"]),
+                pid=pid,
+                command=group["command"],
+                exposed_to_network=group["exposed"],
                 service_name=service_name,
                 risk=risk,
                 risk_note=risk_note,

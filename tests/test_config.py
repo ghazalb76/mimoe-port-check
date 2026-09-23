@@ -1,6 +1,6 @@
 import pytest
 
-from mimoe_port_scout.config import NonLocalEndpointError, load_config
+from mimoe_port_check.config import NonLocalEndpointError, load_config
 
 
 def test_load_config_defaults(monkeypatch):

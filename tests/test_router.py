@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
-from mimoe_port_scout.config import Config
-from mimoe_port_scout.router import keyword_fallback, route
+from mimoe_port_check.config import Config
+from mimoe_port_check.router import keyword_fallback, route
 
 CONFIG = Config(
     base_url="http://localhost:8083/mimik-ai/openai/v1",
@@ -10,7 +10,7 @@ CONFIG = Config(
 )
 
 
-@patch("mimoe_port_scout.router.chat_completion")
+@patch("mimoe_port_check.router.chat_completion")
 def test_route_uses_valid_model_json(mock_chat):
     mock_chat.return_value = '{"tool": "list_ports", "args": {}}'
 
@@ -21,7 +21,7 @@ def test_route_uses_valid_model_json(mock_chat):
     assert result.source == "model"
 
 
-@patch("mimoe_port_scout.router.chat_completion")
+@patch("mimoe_port_check.router.chat_completion")
 def test_route_extracts_json_surrounded_by_rambling(mock_chat):
     mock_chat.return_value = (
         "Sure! Here's what I think:\n"
@@ -36,7 +36,7 @@ def test_route_extracts_json_surrounded_by_rambling(mock_chat):
     assert result.source == "model"
 
 
-@patch("mimoe_port_scout.router.chat_completion")
+@patch("mimoe_port_check.router.chat_completion")
 def test_route_coerces_quoted_numeric_args(mock_chat):
     mock_chat.return_value = '{"tool": "inspect_process", "args": {"pid": "512"}}'
 
@@ -46,7 +46,7 @@ def test_route_coerces_quoted_numeric_args(mock_chat):
     assert result.args == {"pid": 512}
 
 
-@patch("mimoe_port_scout.router.chat_completion")
+@patch("mimoe_port_check.router.chat_completion")
 def test_route_falls_back_on_garbage_output(mock_chat):
     mock_chat.return_value = "I like turtles."
 
@@ -56,7 +56,7 @@ def test_route_falls_back_on_garbage_output(mock_chat):
     assert result.tool == "list_ports"
 
 
-@patch("mimoe_port_scout.router.chat_completion")
+@patch("mimoe_port_check.router.chat_completion")
 def test_route_falls_back_on_non_whitelisted_tool(mock_chat):
     mock_chat.return_value = '{"tool": "delete_everything", "args": {}}'
 
@@ -65,7 +65,7 @@ def test_route_falls_back_on_non_whitelisted_tool(mock_chat):
     assert result.source == "fallback"
 
 
-@patch("mimoe_port_scout.router.chat_completion")
+@patch("mimoe_port_check.router.chat_completion")
 def test_route_falls_back_on_invalid_args_type(mock_chat):
     mock_chat.return_value = '{"tool": "inspect_process", "args": {"pid": "not-a-number"}}'
 

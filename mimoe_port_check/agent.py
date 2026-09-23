@@ -34,13 +34,39 @@ CONTEXT_AWARE_TOOLS = {"inspect_process", "check_exposure"}
 def format_list_ports(entries: list[PortEntry]) -> str:
     if not entries:
         return "No listening TCP ports found."
-    lines = [
-        f"- port {e.port}/{e.protocol}, bind={e.local_address}, "
-        f"exposed_to_network={e.exposed_to_network}, pid={e.pid}, command={e.command}, "
-        f"service={e.service_name}, risk={e.risk} ({e.risk_note})"
-        for e in entries
-    ]
-    return "Listening ports:\n" + "\n".join(lines)
+
+    total = len(entries)
+    exposed_count = sum(1 for e in entries if e.exposed_to_network)
+    high_risk_count = sum(1 for e in entries if e.risk == "HIGH")
+    summary = (
+        f"{total} listening port{'' if total == 1 else 's'}, "
+        f"{exposed_count} exposed to network, {high_risk_count} high risk"
+    )
+
+    # Group by process (command) so a process with several ports shows once,
+    # not as several near-identical lines -- keeps output compact.
+    grouped: dict[str, list[PortEntry]] = {}
+    order: list[str] = []
+    for e in entries:
+        if e.command not in grouped:
+            grouped[e.command] = []
+            order.append(e.command)
+        grouped[e.command].append(e)
+
+    lines = [summary, ""]
+    for command in order:
+        lines.append(f"{command}:")
+        for e in grouped[command]:
+            # pid stays per-line, not per-group header: the same command
+            # name can belong to several distinct processes (e.g. multiple
+            # "Code Helper" instances), each with its own pid and port.
+            lines.append(
+                f"  pid {e.pid}, port {e.port}/{e.protocol}, bind={e.local_address}, "
+                f"exposed_to_network={e.exposed_to_network}, "
+                f"service={e.service_name}, risk={e.risk} ({e.risk_note})"
+            )
+
+    return "\n".join(lines)
 
 
 def format_inspect_process(details: ProcessDetails) -> str:
@@ -85,7 +111,7 @@ def resolve_route(question: str, config: Config, last_route: Route | None) -> Ro
 
 
 def _print_welcome(config: Config) -> None:
-    print("mimoe-port-scout -- local security check agent")
+    print("mimoe-port-check -- local security check agent")
     print(f"Connected to {config.base_url} (model: {config.model})")
     print('Ask things like "what\'s open on my machine?" or "what\'s on port 5432?"')
     print("Type 'exit' or Ctrl-D to quit.\n")
