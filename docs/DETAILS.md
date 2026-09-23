@@ -58,30 +58,34 @@ Full table (16-question routing eval + explain-step spot checks):
 
 | Model | Size | Routing accuracy (16 Qs) | Avg routing latency | Explain-step quality | Avg explain latency |
 |---|---|---|---|---|---|
-| `smollm-360m` | 360M | 0% correct via model (0/16 attempted; the keyword fallback routed all 16 and got 14 right) | ~550ms | Weakest of the three: frequently loops the same sentence verbatim, sometimes fabricates an entirely nonexistent second finding (an extra port/pid not in the data), and occasionally gives generic off-topic technical advice (e.g. suggesting unrelated shell commands) instead of explaining the actual finding | ~1.4s |
-| `qwen3-1.7b` | 1.7B | 75% correct via model (12/16; 1 wrong, 3 fallback) | ~720ms | Coherent, grounded 2-4 sentence summaries referencing the actual finding and a sensible suggestion, on most questions; one observed case invented an unsupported "security threat" framing for a result that carried no risk label, despite the prompt saying not to invent risk assessments | ~1.3s |
-| `qwen3-4b` | 4B | 94% correct via model (15/16; 1 wrong, 0 fallback) | ~1.35s | Similarly coherent and consistent; one observed case fabricated specific technical details (port numbers) that did not appear anywhere in the underlying data: a more concrete, specific-sounding hallucination than qwen3-1.7b's, even though the prose read smoothly | ~2.7s |
+| `smollm-360m` | 360M | 0% correct via model (0/16 attempted; the keyword fallback routed all 16 and got all 16 right) | ~420ms | Weakest of the three: frequently loops the same sentence verbatim, sometimes fabricates an entirely nonexistent second finding (an extra port/pid not in the data), and occasionally gives generic off-topic technical advice (e.g. suggesting unrelated shell commands) instead of explaining the actual finding; the grounding warning flagged a fabricated port and PID in one of its explanations | ~1.4s |
+| `qwen3-1.7b` | 1.7B | 81% correct via model (13/16; 1 wrong, 2 fallback) | ~720ms | Coherent, grounded 2-4 sentence summaries referencing the actual finding and a sensible suggestion, on most questions; one observed case invented an unsupported "security threat" framing for a result that carried no risk label, despite the prompt saying not to invent risk assessments | ~1.3s |
+| `qwen3-4b` | 4B | 88% correct via model (14/16; 1 wrong, 1 fallback) | ~1.4s | Similarly coherent and consistent. In an earlier run it fabricated specific technical details (port numbers) that did not appear anywhere in the underlying data, a more concrete, specific-sounding hallucination than qwen3-1.7b's. That did not reproduce in the latest run, where it instead invented an unsupported "malicious process" framing for the same no-risk-label case qwen3-1.7b tripped on | ~2.0s |
 
-`smollm-360m` and `qwen3-1.7b` were re-run on 2026-09-23 against the current
-routing prompt and few-shot examples (one run each). `qwen3-4b` is still the
-original measurement, taken before that prompt change, so its row isn't
-directly comparable yet. On the smollm re-run, the two fallback misses were
-"show me details for process id 900" (no "pid"/"process 900" adjacency, so it
-fell through to `list_ports`) and "is 8080 open to the network?" (a bare port
-number with no "port" keyword).
+All three models were measured on 2026-09-23 against the same commit and the
+current routing prompt and few-shot examples, one run each, so results can vary
+by a question or two between runs. An earlier smollm-360m run showed the
+keyword fallback missing two questions, "show me details for process id 900"
+and "is 8080 open to the network?". That gap has since been fixed, and the
+smollm row above reflects the fixed fallback (16/16 end to end). Both Qwen
+models also ended up with 15/16 routes right, counting the one question each
+got wrong via the model ("who owns port 6379?", sent to `list_ports`).
 
 **Why `select_model` prefers `qwen3-1.7b`, then `qwen3-4b`, then
 `smollm-360m`:** `qwen3-1.7b` gets the best balance of the three: routing
 correctness the keyword fallback doesn't have to carry, and the lowest
 latency of the two models that actually route well. `qwen3-4b` is second:
-more accurate (94% vs. 75%, though the 4b number predates the routing prompt
-change) but at roughly 2x the latency of `qwen3-1.7b` on both steps, and its
-hallucinations run more specific/plausible-sounding (fabricated port numbers)
-rather than less frequent, arguably a worse failure mode to trust at a glance than
-`qwen3-1.7b`'s vaguer invented framing. `smollm-360m` is last because its
+one question more accurate (88% vs. 81%, within the run-to-run spread) but at
+roughly 2x the routing latency and about 1.5x the explain latency of
+`qwen3-1.7b`. In an earlier run its hallucinations were also more
+specific and plausible-sounding (fabricated port numbers) than
+`qwen3-1.7b`'s vaguer invented framing, which is a worse failure mode to trust
+at a glance. That didn't reproduce in the latest run, and hallucinations vary
+between runs, which is why the findings from code are always shown first.
+`smollm-360m` is last because its
 routing depends on the keyword fallback and its explanations are the least
 reliable of the three. It stays in the list because it ships with mimOE, so
-it's the fallback when no Qwen model is loaded. It is the fastest, at ~550ms
+it's the fallback when no Qwen model is loaded. It is the fastest, at ~420ms
 routing.
 The grounding-check warning below the explain step exists precisely because
 none of these three models is hallucination-free.
