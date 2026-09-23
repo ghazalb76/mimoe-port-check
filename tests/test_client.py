@@ -7,13 +7,22 @@ from mimoe_port_check.client import (
     MimOEConnectionError,
     MimOEResponseError,
     MimOETimeoutError,
+    NoModelLoadedError,
     chat_completion,
+    list_models,
+    select_model,
 )
 from mimoe_port_check.config import Config
 
 CONFIG = Config(
     base_url="http://localhost:8083/mimik-ai/openai/v1",
     model="smollm-360m",
+    api_key="1234",
+)
+
+CONFIG_UNRESOLVED = Config(
+    base_url="http://localhost:8083/mimik-ai/openai/v1",
+    model=None,
     api_key="1234",
 )
 
@@ -81,3 +90,77 @@ def test_chat_completion_malformed_body(mock_post):
 
     with pytest.raises(MimOEResponseError, match="expected"):
         chat_completion(CONFIG, [{"role": "user", "content": "hi"}])
+
+
+@patch("mimoe_port_check.client.requests.get")
+def test_list_models_success(mock_get):
+    mock_get.return_value = _mock_response(
+        200, {"data": [{"id": "smollm-360m"}, {"id": "qwen3-1.7b"}]}
+    )
+
+    result = list_models(CONFIG_UNRESOLVED)
+
+    assert result == ["smollm-360m", "qwen3-1.7b"]
+    url = mock_get.call_args.args[0]
+    assert url == "http://localhost:8083/mimik-ai/openai/v1/models"
+
+
+@patch("mimoe_port_check.client.requests.get")
+def test_list_models_connection_error(mock_get):
+    mock_get.side_effect = requests.exceptions.ConnectionError()
+
+    with pytest.raises(MimOEConnectionError):
+        list_models(CONFIG_UNRESOLVED)
+
+
+@patch("mimoe_port_check.client.requests.get")
+def test_list_models_malformed_body(mock_get):
+    mock_get.return_value = _mock_response(200, {"unexpected": "shape"})
+
+    with pytest.raises(MimOEResponseError, match="expected"):
+        list_models(CONFIG_UNRESOLVED)
+
+
+@patch("mimoe_port_check.client.requests.get")
+def test_select_model_prefers_qwen3_1_7b_first(mock_get):
+    mock_get.return_value = _mock_response(
+        200, {"data": [{"id": "smollm-360m"}, {"id": "qwen3-1.7b"}, {"id": "qwen3-4b"}]}
+    )
+
+    config = select_model(CONFIG_UNRESOLVED)
+
+    assert config.model == "qwen3-1.7b"
+
+
+@patch("mimoe_port_check.client.requests.get")
+def test_select_model_falls_back_to_qwen3_4b(mock_get):
+    mock_get.return_value = _mock_response(200, {"data": [{"id": "smollm-360m"}, {"id": "qwen3-4b"}]})
+
+    config = select_model(CONFIG_UNRESOLVED)
+
+    assert config.model == "qwen3-4b"
+
+
+@patch("mimoe_port_check.client.requests.get")
+def test_select_model_falls_back_to_smollm(mock_get):
+    mock_get.return_value = _mock_response(200, {"data": [{"id": "smollm-360m"}]})
+
+    config = select_model(CONFIG_UNRESOLVED)
+
+    assert config.model == "smollm-360m"
+
+
+@patch("mimoe_port_check.client.requests.get")
+def test_select_model_raises_when_none_known_are_loaded(mock_get):
+    mock_get.return_value = _mock_response(200, {"data": [{"id": "some-other-model"}]})
+
+    with pytest.raises(NoModelLoadedError):
+        select_model(CONFIG_UNRESOLVED)
+
+
+@patch("mimoe_port_check.client.requests.get")
+def test_select_model_raises_when_nothing_is_loaded(mock_get):
+    mock_get.return_value = _mock_response(200, {"data": []})
+
+    with pytest.raises(NoModelLoadedError):
+        select_model(CONFIG_UNRESOLVED)

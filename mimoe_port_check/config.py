@@ -12,7 +12,6 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 DEFAULT_BASE_URL = "http://localhost:8083/mimik-ai/openai/v1"
-DEFAULT_MODEL = "smollm-360m"
 DEFAULT_API_KEY = "1234"
 
 LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -25,14 +24,19 @@ class NonLocalEndpointError(RuntimeError):
 @dataclass(frozen=True)
 class Config:
     base_url: str
-    model: str
+    model: str | None  # None means "not pinned -- auto-select" (see client.select_model)
     api_key: str
 
 
 def load_config() -> Config:
+    """Load base_url/api_key from the environment, plus model if MIMOE_MODEL
+    is explicitly set. model=None means the caller should auto-select one
+    (see client.select_model) rather than this defaulting to a fixed model --
+    querying mimOE for what's actually loaded requires a network call, which
+    doesn't belong in this otherwise pure, network-free env-parsing step."""
     load_dotenv()
     base_url = os.environ.get("MIMOE_BASE_URL", DEFAULT_BASE_URL)
-    model = os.environ.get("MIMOE_MODEL", DEFAULT_MODEL)
+    model = os.environ.get("MIMOE_MODEL")  # unset -> None -> auto-select
     api_key = os.environ.get("MIMOE_API_KEY", DEFAULT_API_KEY)
 
     _assert_localhost(base_url)

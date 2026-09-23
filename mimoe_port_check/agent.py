@@ -14,7 +14,7 @@ router.strip_think_blocks) but is never executed or treated as instructions.
 import re
 import sys
 
-from .client import MimOEError, chat_completion
+from .client import MimOEError, chat_completion, select_model
 from .config import Config, NonLocalEndpointError, load_config
 from .router import Route, route, strip_think_blocks
 from .tools import ExposureReport, PortEntry, ProcessDetails, check_exposure, inspect_process, list_ports
@@ -184,6 +184,11 @@ def resolve_route(question: str, config: Config, last_route: Route | None, debug
 def _print_welcome(config: Config) -> None:
     print("mimoe-port-check -- local security check agent")
     print(f"Connected to {config.base_url} (model: {config.model})")
+    if config.model == "smollm-360m":
+        print(
+            "Tip: routing accuracy is much better with qwen3-1.7b loaded in "
+            "mimOE -- see the README's \"Model comparison\" section."
+        )
     print('Ask things like "what\'s open on my machine?" or "what\'s on port 5432?"')
     print("Type 'exit' or Ctrl-D to quit.\n")
 
@@ -194,6 +199,13 @@ def main(debug: bool = False) -> None:
     except NonLocalEndpointError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
+
+    if config.model is None:
+        try:
+            config = select_model(config)
+        except MimOEError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     _print_welcome(config)
 

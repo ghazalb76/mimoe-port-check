@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 from mimoe_port_check.agent import (
+    _print_welcome,
     deterministic_explanation,
     format_check_exposure,
     format_inspect_process,
@@ -267,3 +268,15 @@ def test_resolve_route_forwards_debug_flag(mock_route):
     resolve_route("what's open?", CONFIG, None, debug=True)
 
     mock_route.assert_called_once_with("what's open?", CONFIG, debug=True)
+
+
+def test_print_welcome_shows_smollm_tip(capsys):
+    _print_welcome(Config(base_url=CONFIG.base_url, model="smollm-360m", api_key=CONFIG.api_key))
+
+    assert "Tip" in capsys.readouterr().out
+
+
+def test_print_welcome_no_tip_for_other_models(capsys):
+    _print_welcome(Config(base_url=CONFIG.base_url, model="qwen3-1.7b", api_key=CONFIG.api_key))
+
+    assert "Tip" not in capsys.readouterr().out
