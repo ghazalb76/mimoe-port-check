@@ -34,7 +34,7 @@ First, open mimOE Studio, go to AI Models, and load `qwen3-1.7b` (or any of the 
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env      # edit if your mimOE setup differs from the defaults
-python run.py
+python3 run.py
 ```
 
 Ask `what's open on my machine?`, `what's on port 5432?`, or a follow-up like `is it risky?`. Type `exit` to quit.
@@ -42,7 +42,7 @@ Ask `what's open on my machine?`, `what's on port 5432?`, or a follow-up like `i
 **Web UI**, same agent underneath:
 
 ```bash
-python run_web.py
+python3 run_web.py
 ```
 
 Open http://127.0.0.1:8090.
@@ -51,7 +51,7 @@ Open http://127.0.0.1:8090.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest
+python3 -m pytest
 ```
 
 ## Exploring the mimOE endpoint
