@@ -90,7 +90,8 @@ throughout rather than only against mocks.
    `KNOWN_PROCESSES` (rapportd, ControlCenter, Spotify, Code Helper, mimoe),
    checked before the port table. A name match is only trusted once the
    process's real executable path (`ps -o comm=`, which is the full path on
-   macOS and can't be spoofed the way a process's declared name can) confirms
+   macOS and reflects the actual executable rather than the name the
+   process reports, so renaming alone can't spoof it) confirms
    an expected install-path prefix; mimoe has no fixed install path so it's
    name-only. Added the INFO risk level for these. **Found live:** mimoe
    itself is bound to `*:8083` on the dev machine and now reads as INFO
@@ -355,3 +356,35 @@ above was later consolidated into a smaller set of milestone commits, so
   and voice fixes.
 - **Quick start:** commands now use `python3` (and `python3 -m pytest`) to
   match how the venv is created.
+- **Keyword fallback fixes:** the smollm-360m re-run showed the fallback
+  sending two eval questions to `list_ports`. "process id N" now routes to
+  `inspect_process`, and a bare number counts as a port when the question
+  also mentions open, exposed, listening, or network. The number rule skips
+  IP-address octets, counts like "the 10 open ports", and values outside
+  1-65535. Both questions were already in the eval set, so only tests were
+  added. This took the fallback from 14/16 to 16/16 on the eval questions.
+- **Shared PID pattern:** the fallback and the model's grounding check use
+  the same PID pattern, so the widening also lets the grounding check accept
+  a correct model answer for "process id 900" instead of rejecting it and
+  falling back.
+- **Explain eval:** it now runs `strip_markdown` in the same order as the
+  real agent, so it measures what users see. Its output no longer shows
+  raw markdown bullets or bold.
+- **Final re-run of all three models on one commit:** earlier tables mixed
+  measurements from different code. All three were re-run on the same
+  commit, one run each. smollm-360m attempted 0/16 via the model and got
+  16/16 end to end through the fallback. qwen3-1.7b routed 81% via the
+  model and got 15/16 end to end. qwen3-4b routed 88% via the model and got
+  15/16 end to end. This supersedes the 88% and 94% figures recorded for the
+  two Qwen models in Session 3. The earlier qwen3-4b result of fabricated
+  port numbers did not reproduce, so the docs now call it an earlier-run
+  observation and say hallucinations vary between runs. Both Qwen models
+  invented an unsupported risk framing on the no-risk-label process question
+  in this run. The auto-select order is unchanged, since 4b's one-question
+  edge is within run-to-run spread at about twice the routing latency.
+- **Eval caveats, now disclosed:** smollm-360m's 16/16 comes entirely from a
+  fallback that was tuned using two of the same 16 eval questions, so it is
+  likely optimistic on new phrasings. Three of the routing few-shot
+  examples also appear in the eval set, so the Qwen routing numbers are
+  somewhat optimistic too. Separating the two is listed under "What's next"
+  in the README.
