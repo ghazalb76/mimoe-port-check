@@ -116,6 +116,8 @@ xychart-beta
 
 Numbers are from a single run per model on the same commit and can vary by a question or two between runs.
 
+smollm-360m's 16/16 end to end comes entirely from the keyword fallback, which was tuned using two of these same 16 eval questions, so it is likely optimistic on new phrasings. Qwen3 is preferred because its explanations are much better and its routing doesn't depend on hand-written keyword rules, though three of the routing few-shot examples also appear in the eval set, so its routing numbers are somewhat optimistic too.
+
 - The agent auto-selects a model at startup, preferring `qwen3-1.7b`, then `qwen3-4b`, then `smollm-360m`. `MIMOE_MODEL` in `.env` overrides this.
 - `smollm-360m` is listed last because it ships with mimOE by default. It's the weakest of the three, though the grounding warning did catch a fabricated port and PID in one of its explanations.
 - Full rationale, the `/no_think` fix, and how to reproduce: [docs/DETAILS.md](docs/DETAILS.md#model-comparison).

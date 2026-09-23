@@ -84,9 +84,14 @@ at a glance. That didn't reproduce in the latest run, and hallucinations vary
 between runs, which is why the findings from code are always shown first.
 `smollm-360m` is last because its
 routing depends on the keyword fallback and its explanations are the least
-reliable of the three. It stays in the list because it ships with mimOE, so
-it's the fallback when no Qwen model is loaded. It is the fastest, at ~420ms
-routing.
+reliable of the three. Its 16/16 end-to-end score comes entirely from that
+fallback, which was tuned using two of the same 16 eval questions, so it is
+likely optimistic on new phrasings. Qwen3 is preferred because its explanations
+are much better and its routing doesn't depend on hand-written keyword rules,
+though three of the routing few-shot examples also appear in the eval set, so
+its routing numbers are somewhat optimistic too. It stays in the list because
+it ships with mimOE, so it's the fallback when no Qwen model is loaded. It is
+the fastest, at ~420ms routing.
 The grounding-check warning below the explain step exists precisely because
 none of these three models is hallucination-free.
 
