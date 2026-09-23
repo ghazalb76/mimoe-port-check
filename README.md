@@ -144,7 +144,7 @@ smollm-360m's 16/16 end to end comes entirely from the keyword fallback, which w
 
 - Model output can be wrong. Small local models sometimes misstate findings, so the design keeps them off the critical path: findings from code are always shown first, and the model is skipped when there's nothing to explain.
 - Safety checks are heuristics, not guarantees. Grounding and contradiction checks catch invented ports and PIDs, and wrong exposure claims. They can still miss things, like a model calling a LOW-risk port "not safe". The checks are tuned to avoid false alarms, so some mistakes get through.
-- Routing depends on model size. With `smollm-360m`, the keyword fallback does most of the routing. A model-chosen port or PID is only accepted if that number appears in the question.
+- Routing depends on model size. With `smollm-360m`, the keyword fallback does all of the routing. A model-chosen port or PID is only accepted if that number appears in the question.
 - One known process is matched by name only. `mimoe` has no fixed install path, so it can't be path-verified. A process could spoof its name. The impact is low: an exposed `mimoe` is still MEDIUM, and a localhost one gets LOW, the same as any unknown local port.
 - Scope: macOS only, TCP only, and follow-ups remember only the last question.
 
@@ -154,6 +154,7 @@ smollm-360m's 16/16 end to end comes entirely from the keyword fallback, which w
 - Deploy as a mim inside mimOE itself, instead of a standalone CLI/server.
 - Mesh discovery. mimOE can discover other instances on the LAN. This agent doesn't use that today, since any use would need to preserve the "data never leaves this machine" guarantee.
 - Constrained decoding for the explain step, if mimOE exposes one, as a stronger alternative to prompting plus grounding checks.
+- Separate the eval questions from the routing prompt's few-shot examples, so routing accuracy is measured on held-out phrasings.
 
 ## How I used AI assistance
 
@@ -169,7 +170,7 @@ smollm-360m's 16/16 end to end comes entirely from the keyword fallback, which w
 
 **What Claude found that I verified myself:**
 - A real `.env` file leaked into the test suite through `load_dotenv()`'s file-location search. It broke test isolation (`tests/test_config.py`).
-- Qwen3's `<think>` block silently consuming the entire routing/explain token budget.
+- Qwen3's `<think>` block was silently consuming the entire routing/explain token budget.
 
 **Claude Code setup:** `CLAUDE.md` holds the standing project rules. Slash commands in `.claude/commands/` wrap the steps above that came up repeatedly.
 
