@@ -58,40 +58,7 @@ pytest
 
 ## How the components connect
 
-```mermaid
-flowchart LR
-    Q[User question<br/>CLI or web UI] --> A
-    A[resolve_route<br/>agent.py] -- otherwise --> R
-    A -- follow-up --> CTX
-    A -- off-topic or bad PID --> FIX
-    CTX[Reuse last tool + args] --> T
-    FIX[Fixed message<br/>no model call]
-    R[Tool router<br/>router.py] -- valid JSON, grounded --> T
-    R -- invalid or ungrounded --> KW
-    KW[Keyword fallback] --> T
-    T[Read-only tools<br/>list_ports / inspect_process / check_exposure] --> RISK
-    RISK[Risk labels from code<br/>+ secret redaction] --> N
-    N[Anything to explain?] -- yes --> M
-    N -- no --> DET
-    DET[Deterministic message<br/>no model call] --> OUT
-    M[mimOE local model<br/>explains findings] --> G
-    G[Grounding + contradiction checks] --> OUT
-    OUT[Findings + explanation<br/>+ warning if flagged]
-
-    MIMOE[(mimOE on<br/>localhost:8083)] -.-> R
-    MIMOE -.-> M
-
-    classDef entryStep fill:#efe9dc,stroke:#b8ae95,color:#3a3428;
-    classDef modelStep fill:#e3e0fb,stroke:#7c6fea,color:#3d2f8f;
-    classDef codeStep fill:#d7f5df,stroke:#2f9e44,color:#1b5e33;
-    classDef sideStep fill:#d7f5df,stroke:#2f9e44,color:#1b5e33,stroke-dasharray: 5 3;
-    class Q,OUT entryStep;
-    class R,M modelStep;
-    class A,T,RISK,N,G codeStep;
-    class CTX,FIX,KW,DET sideStep;
-```
-
-Purple calls the model (routing attempt, explanation). Green is owned entirely by code (tools, risk labels, guardrail checks); a dashed border marks a side path with no model call. Cream marks where the flow starts and ends.
+![How the components connect](docs/architecture.svg)
 
 ## Model comparison
 
