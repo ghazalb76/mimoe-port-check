@@ -58,29 +58,33 @@ pytest
 
 ## How the components connect
 
+```mermaid
+flowchart TD
+    Q[User question<br/>CLI or Web UI] --> A{resolve_route<br/>agent.py}
+    A -- follow-up --> CTX[Reuse last tool + args]
+    A -- off-topic or non-numeric PID --> FIX[Fixed message<br/>no model call]
+    A -- otherwise --> R{Tool router<br/>router.py}
+    R -- valid JSON, args grounded in question --> T
+    R -- invalid or ungrounded --> KW[Keyword fallback] --> T
+    CTX --> T[Read-only tools<br/>list_ports / inspect_process / check_exposure]
+    T --> RISK[Risk labels from code<br/>+ secret redaction]
+    RISK --> N{Anything to explain?}
+    N -- no --> DET[Deterministic message]
+    N -- yes --> M[mimOE local model<br/>explains findings]
+    M --> G[Grounding + contradiction checks]
+    G --> OUT[Findings + explanation<br/>+ warning if flagged]
+    DET --> OUT
+
+    MIMOE[(mimOE on localhost:8083)] -.-> R
+    MIMOE -.-> M
+
+    classDef modelStep fill:#cfe2ff,stroke:#4c6fef,color:#1a3d7c;
+    classDef codeStep fill:#d7f5df,stroke:#2f9e44,color:#1b5e33;
+    class R,M modelStep;
+    class T,RISK,G codeStep;
 ```
-CLI (run.py) / Web UI (run_web.py)
-  │  user question
-  ▼
-agent loop (agent.py) -- process_question(), shared by both
-  │  resolve_route(): reuse context for follow-ups; off-topic or an
-  │  unmistakably non-numeric PID -> a fixed message, no model call
-  ▼
-tool router (router.py)
-  │  model picks {"tool", "args"} → validated; a chosen port/pid not
-  │  literally in the question is rejected too → keyword fallback
-  ▼
-tools (tools.py) -- list_ports / inspect_process / check_exposure
-  │  subprocess.run([...]), argument lists only, never shell=True
-  ▼
-mimOE endpoint (client.py) -- explains the already-redacted findings
-  ▼
-grounding + contradiction checks (agent.py)
-  │  flag an invented port/pid, or an exposure claim that disagrees
-  │  with the findings
-  ▼
-findings + explanation (+ warning, if flagged) shown to the user
-```
+
+Blue steps call the model (routing attempt, explanation). Green steps are owned entirely by code (tools, risk labels, guardrail checks).
 
 ## Model comparison
 
