@@ -44,11 +44,10 @@ def is_trusted_host(host_header: str | None) -> bool:
 
 
 def is_trusted_origin(origin_header: str | None, server_port: int) -> bool:
-    """Origin is only sent by browsers, and only for requests capable of
-    being cross-origin; a same-origin page's fetch() or a non-browser
-    client won't send one at all, so its absence is allowed -- the Host
-    check above is the primary defense. When present, it must be exactly
-    this server's own http://localhost|127.0.0.1:<port> origin."""
+    """When present, Origin must exactly match this server's own
+    http://localhost|127.0.0.1:<port> origin. Absent is allowed because
+    non-browser clients like curl don't send one; the Host check above is
+    the primary defense."""
     if not origin_header:
         return True
     try:
