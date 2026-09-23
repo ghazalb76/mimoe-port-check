@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mimoe-port-check</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* Design tokens sampled pixel-by-pixel from mimOE Studio's own
+     dashboard (its "AI Models" screen): page/card backgrounds are
+     nearly identical off-whites (cards read as "bordered", not "white
+     on gray"); body text is a dark navy, never pure black; there are
+     TWO distinct green families -- a muted sage-green pill used for
+     primary actions/active state (On Device, Load, Add Alias) and a
+     lighter mint-green used only for the READY status pill; Unload is
+     a pale dusty pink, not a saturated red; and monospace is reserved
+     for technical/identifier values (a table's ID column, a
+     host:port string, param counts) while prominent display names and
+     UI labels stay in bold sans. */
+  :root {
+    color-scheme: light;
+    --bg: #f5f5f7;
+    --card: #f1f1f6;
+    --border: #e3e4e8;
+    --text: #0c1c33;
+    --text-secondary: #6b7280;
+    --text-label: #8b96a4;
+
+    --sage-bg: #cfddc1;
+    --sage-bg-strong: #c2d6ac;
+    --sage-text: #6a9c2d;
+    --sage-border: #b9d19f;
+
+    --mint-bg: #dbeae1;
+    --mint-text: #2f9c53;
+    --status-dot: #5ec269;
+
+    --purple-bg: #dcdcf4;
+    --purple-text: #7b85e8;
+
+    --blue-chip-bg: #d7ddf5;
+    --blue-chip-text: #4f6fef;
+    --pill-gray-bg: #e4e5e8;
+
+    --amber-bg: #fbedd8;
+    --amber-text: #a15c00;
+
+    --red-bg: #fbe2e2;
+    --red-text: #dd524c;
+    --red-border: #f0c4c4;
+
+    --radius: 16px;
+    --sans: 'Inter', -apple-system, system-ui, sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem 1.25rem 4rem;
+    line-height: 1.45;
+  }
+
+  .mono { font-family: var(--mono); }
+
+  /* --- top bar: brand + connection status pill (mirrors the sidebar's
+     logo + "AUTO localhost:8083" pill in mimOE Studio) --- */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+  }
+  .brand { display: flex; align-items: baseline; gap: 0.4rem; }
+  .brand-name { font-weight: 700; font-size: 1.15rem; letter-spacing: -0.01em; color: var(--text); }
+  .brand-dot { color: var(--amber-text); }
+
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: var(--pill-gray-bg);
+    border-radius: 999px;
+    padding: 0.35rem 0.7rem 0.35rem 0.55rem;
+  }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--status-dot);
+    flex-shrink: 0;
+  }
+  .chip {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    padding: 0.12rem 0.45rem;
+    border-radius: 999px;
+    background: var(--blue-chip-bg);
+    color: var(--blue-chip-text);
+  }
+  #model-select {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    background: transparent;
+    border: none;
+    max-width: 160px;
+  }
+  #model-select:disabled { color: var(--text-secondary); opacity: 1; }
+  #model-select:not(:disabled) { cursor: pointer; }
+  #model-select:focus { outline: none; }
+
+  .tip {
+    margin-bottom: 1.25rem;
+    padding: 0.55rem 0.8rem;
+    border-radius: var(--radius);
+    background: var(--amber-bg);
+    color: var(--amber-text);
+    font-size: 0.88rem;
+  }
+
+  h1 {
+    font-size: 1.6rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0 0 1rem;
+    color: var(--text);
+  }
+  h2 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    margin: 0 0 0.6rem;
+    color: var(--text);
+  }
+
+  /* --- card: the base container used everywhere. Barely darker than
+     the page background -- in the reference, cards are told apart by
+     their border, not by a white-vs-gray contrast. --- */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.1rem;
+    margin-bottom: 1.1rem;
+  }
+
+  .ask-card { display: flex; gap: 0.6rem; }
+  input[type=text] {
+    flex: 1;
+    padding: 0.55rem 0.75rem;
+    font-size: 0.95rem;
+    font-family: var(--sans);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+  }
+  input[type=text]:focus {
+    outline: 2px solid var(--sage-text);
+    outline-offset: 1px;
+  }
+
+  /* Every primary-action pill in the reference (On Device, Load, Add
+     Alias) uses the same pattern: a light sage-green fill (subtle
+     gradient) with darker olive-green text/icon -- never a solid fill
+     with white text. */
+  .btn {
+    padding: 0.55rem 1.1rem;
+    font-size: 0.95rem;
+    font-weight: 700;
+    font-family: var(--sans);
+    border-radius: 999px;
+    border: 1px solid var(--sage-border);
+    cursor: pointer;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--sage-bg), var(--sage-bg-strong));
+    color: var(--sage-text);
+  }
+  .btn-primary:hover { background: var(--sage-bg-strong); }
+  .btn-outline {
+    background: var(--card);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .btn-outline:hover { border-color: var(--text-label); }
+
+  /* --- quick questions: click-to-ask chips, plus two small "pick your
+     own value" rows for the two tools that take a port/PID --- */
+  .quick-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--text-label);
+    text-transform: uppercase;
+    margin-bottom: 0.65rem;
+  }
+  .chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.9rem;
+  }
+  .chip-btn {
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    font-weight: 500;
+    padding: 0.4rem 0.8rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .chip-btn:hover { border-color: var(--sage-text); color: var(--sage-text); }
+
+  .variable-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+  }
+  .variable-row label {
+    font-size: 0.88rem;
+    color: var(--text-secondary);
+    min-width: 6.5rem;
+  }
+  .variable-row input[type=number] {
+    width: 7rem;
+    padding: 0.4rem 0.6rem;
+    font-size: 0.9rem;
+    font-family: var(--mono);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .variable-row input[type=number]:focus {
+    outline: 2px solid var(--sage-text);
+    outline-offset: 1px;
+  }
+  .variable-row .btn { padding: 0.4rem 0.9rem; font-size: 0.85rem; }
+
+  /* --- data table: gray uppercase letter-spaced headers on a subtle
+     band, thin row borders, identifier columns in monospace (matching
+     the reference table's MODEL ID column, which is monospace even
+     though the equivalent name in a "hero" card elsewhere is bold
+     sans) --- */
+  table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  thead th {
+    text-align: left;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--text-label);
+    text-transform: uppercase;
+    padding: 0.5rem 0.6rem;
+    background: var(--pill-gray-bg);
+    border-bottom: 1px solid var(--border);
+  }
+  thead th:first-child { border-top-left-radius: 8px; }
+  thead th:last-child { border-top-right-radius: 8px; }
+  tbody td {
+    padding: 0.55rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.88rem;
+    vertical-align: top;
+    color: var(--text);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.mono, th.mono { font-family: var(--mono); }
+
+  /* --- pill badges: risk levels reuse the exact shape/pattern of the
+     reference's READY (mint) / Unload (dusty pink) pills, one color
+     family per risk level. --- */
+  .pill {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    background: var(--pill-gray-bg);
+    color: var(--text-secondary);
+  }
+  .pill-HIGH { background: var(--red-bg); color: var(--red-text); }
+  .pill-MEDIUM { background: var(--amber-bg); color: var(--amber-text); }
+  .pill-LOW { background: var(--mint-bg); color: var(--mint-text); }
+  .pill-INFO { background: var(--blue-chip-bg); color: var(--blue-chip-text); }
+
+  .summary-line {
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: var(--text);
+    margin-bottom: 0.6rem;
+  }
+
+  .explanation {
+    background: var(--purple-bg);
+    color: var(--text);
+    padding: 0.7rem 0.9rem;
+    border-radius: var(--radius);
+  }
+
+  .info-toggle-row { margin-top: 0.6rem; }
+
+  .alert-danger {
+    background: var(--red-bg);
+    color: var(--red-text);
+    border-radius: var(--radius);
+    padding: 0.55rem 0.8rem;
+    margin-top: 0.6rem;
+    font-size: 0.88rem;
+    font-weight: 500;
+  }
+
+  .routed-via {
+    color: var(--text-label);
+    font-size: 0.78rem;
+    margin-top: 0.8rem;
+  }
+
+  .muted { color: var(--text-secondary); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <span class="brand-name">mimoe<span class="brand-dot">·</span>port-check</span>
+  </div>
+  <div class="status-pill" id="status-pill">
+    <span class="status-dot"></span>
+    <span class="chip">MODEL</span>
+    <select id="model-select" class="mono" disabled>
+      <option>connecting...</option>
+    </select>
+  </div>
+</div>
+
+<div class="tip" id="tip" hidden></div>
+
+<h1>Ask about this machine</h1>
+
+<form id="ask-form" class="card ask-card">
+  <input type="text" id="question" placeholder="what's open on my machine?" autocomplete="off" maxlength="500" required>
+  <button type="submit" class="btn btn-primary">Ask</button>
+</form>
+
+<div class="card">
+  <div class="quick-label">Quick questions</div>
+  <div class="chip-row" id="chip-row"></div>
+
+  <div class="variable-row">
+    <label for="port-input">Check port</label>
+    <input type="number" id="port-input" min="1" max="65535" placeholder="5432">
+    <button type="button" class="btn btn-outline" id="port-ask-btn">Check</button>
+  </div>
+  <div class="variable-row">
+    <label for="pid-input">Inspect PID</label>
+    <input type="number" id="pid-input" min="1" placeholder="512">
+    <button type="button" class="btn btn-outline" id="pid-ask-btn">Check</button>
+  </div>
+</div>
+
+<div id="result"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var modelSelect = document.getElementById("model-select");
+  var tipBox = document.getElementById("tip");
+  var form = document.getElementById("ask-form");
+  var questionInput = document.getElementById("question");
+  var resultBox = document.getElementById("result");
+  var chipRow = document.getElementById("chip-row");
+  var portInput = document.getElementById("port-input");
+  var pidInput = document.getElementById("pid-input");
+
+  // No variable needed -- click asks exactly this.
+  var QUICK_QUESTIONS = [
+    "what's open on my machine?",
+    "is anything risky listening?",
+    "what's exposed to the network?",
+    "what's on port 8083?",
+  ];
+
+  // Every value below that could contain system- or model-derived text
+  // (process names, args, service names, risk notes, the model's
+  // explanation, warnings) is set via .textContent, never innerHTML --
+  // that text is untrusted (a process can name itself anything).
+  function el(tag, options) {
+    var node = document.createElement(tag);
+    if (options && options.text !== undefined) {
+      node.textContent = options.text;
+    }
+    if (options && options.className) {
+      node.className = options.className;
+    }
+    return node;
+  }
+
+  function clear(node) {
+    while (node.firstChild) {
+      node.removeChild(node.firstChild);
+    }
+  }
+
+  function riskPill(risk) {
+    var known = risk === "HIGH" || risk === "MEDIUM" || risk === "LOW" || risk === "INFO";
+    return el("span", { text: risk, className: known ? "pill pill-" + risk : "pill" });
+  }
+
+  function cell(text, mono) {
+    var value = text === null || text === undefined ? "" : String(text);
+    return el("td", { text: value, className: mono ? "mono" : undefined });
+  }
+
+  function headerRow(labels) {
+    var row = el("tr");
+    labels.forEach(function (label) {
+      row.appendChild(el("th", { text: label }));
+    });
+    return row;
+  }
+
+  // HIGH first, then MEDIUM, LOW, INFO -- INFO rows (expected/benign
+  // services like AirPlay or Handoff) are collapsed behind a toggle by
+  // default so the notable rows aren't buried under routine ones.
+  var RISK_ORDER = { HIGH: 0, MEDIUM: 1, LOW: 2, INFO: 3 };
+
+  function buildPortRow(entry) {
+    var row = el("tr");
+    row.appendChild(cell(entry.command, true));
+    row.appendChild(cell(entry.pid, true));
+    row.appendChild(cell(entry.port + "/" + entry.protocol, true));
+    row.appendChild(cell(entry.local_address, true));
+    row.appendChild(cell(entry.exposed_to_network ? "yes" : "no"));
+    row.appendChild(cell(entry.service_name));
+    var riskCell = el("td");
+    riskCell.appendChild(riskPill(entry.risk));
+    row.appendChild(riskCell);
+    row.appendChild(cell(entry.risk_note));
+    return row;
+  }
+
+  function renderListPorts(findings) {
+    var sorted = findings.entries.slice().sort(function (a, b) {
+      var ra = RISK_ORDER.hasOwnProperty(a.risk) ? RISK_ORDER[a.risk] : 99;
+      var rb = RISK_ORDER.hasOwnProperty(b.risk) ? RISK_ORDER[b.risk] : 99;
+      return ra - rb;
+    });
+    var visibleEntries = sorted.filter(function (e) { return e.risk !== "INFO"; });
+    var infoEntries = sorted.filter(function (e) { return e.risk === "INFO"; });
+
+    var wrapper = el("div");
+    var table = el("table");
+    table.appendChild(el("thead")).appendChild(headerRow(["Process", "PID", "Port", "Bind", "Exposed", "Service", "Risk", "Note"]));
+    var tbody = el("tbody");
+    visibleEntries.forEach(function (entry) { tbody.appendChild(buildPortRow(entry)); });
+    table.appendChild(tbody);
+    wrapper.appendChild(table);
+
+    if (infoEntries.length > 0) {
+      var infoRows = infoEntries.map(buildPortRow);
+      var expanded = false;
+      var toggleBtn = el("button", { className: "chip-btn" });
+      toggleBtn.type = "button";
+      function updateToggleLabel() {
+        toggleBtn.textContent = expanded
+          ? "Hide expected services"
+          : "Show " + infoEntries.length + " expected service" + (infoEntries.length === 1 ? "" : "s");
+      }
+      updateToggleLabel();
+      toggleBtn.addEventListener("click", function () {
+        expanded = !expanded;
+        if (expanded) {
+          infoRows.forEach(function (row) { tbody.appendChild(row); });
+        } else {
+          infoRows.forEach(function (row) { tbody.removeChild(row); });
+        }
+        updateToggleLabel();
+      });
+      var toggleRow = el("div", { className: "info-toggle-row" });
+      toggleRow.appendChild(toggleBtn);
+      wrapper.appendChild(toggleRow);
+    }
+
+    return wrapper;
+  }
+
+  function renderCheckExposure(findings) {
+    if (!findings.found) {
+      return el("p", { text: "Port " + findings.port + " is not currently listening.", className: "muted" });
+    }
+    var table = el("table");
+    table.appendChild(el("thead")).appendChild(headerRow(["Port", "Bind", "Exposed", "Service", "Risk", "Note"]));
+    var tbody = el("tbody");
+    var row = el("tr");
+    row.appendChild(cell(findings.port, true));
+    row.appendChild(cell(findings.local_address, true));
+    row.appendChild(cell(findings.exposed_to_network ? "yes" : "no"));
+    row.appendChild(cell(findings.service_name));
+    var riskCell = el("td");
+    riskCell.appendChild(riskPill(findings.risk));
+    row.appendChild(riskCell);
+    row.appendChild(cell(findings.risk_note));
+    tbody.appendChild(row);
+    table.appendChild(tbody);
+    return table;
+  }
+
+  function renderInspectProcess(findings) {
+    if (!findings.found) {
+      return el("p", { text: "No process found with PID " + findings.pid + ".", className: "muted" });
+    }
+    var table = el("table");
+    table.appendChild(el("thead")).appendChild(headerRow(["PID", "PPID", "User", "Command", "Args"]));
+    var tbody = el("tbody");
+    var row = el("tr");
+    row.appendChild(cell(findings.pid, true));
+    row.appendChild(cell(findings.ppid, true));
+    row.appendChild(cell(findings.user));
+    row.appendChild(cell(findings.command, true));
+    row.appendChild(cell(findings.args, true));
+    tbody.appendChild(row);
+    table.appendChild(tbody);
+    return table;
+  }
+
+  function renderFindings(findings) {
+    if (!findings) {
+      return null;
+    }
+    if (findings.kind === "list_ports") return renderListPorts(findings);
+    if (findings.kind === "check_exposure") return renderCheckExposure(findings);
+    if (findings.kind === "inspect_process") return renderInspectProcess(findings);
+    return null;
+  }
+
+  function renderResult(data) {
+    clear(resultBox);
+
+    // Summary + explanation first, findings table below -- the "what do I
+    // need to know" answer comes before the "show me everything" detail.
+    var explanationCard = el("div", { className: "card" });
+    explanationCard.appendChild(el("h2", { text: "Explanation" }));
+
+    if (data.findings && data.findings.kind === "list_ports" && data.findings.summary) {
+      explanationCard.appendChild(el("div", { text: data.findings.summary, className: "summary-line" }));
+    }
+
+    explanationCard.appendChild(el("div", { text: data.explanation, className: "explanation" }));
+
+    (data.warnings || []).forEach(function (warning) {
+      explanationCard.appendChild(el("div", { text: "Warning: " + warning, className: "alert-danger" }));
+    });
+
+    var route = data.route || {};
+    var routeText = "routed via " + route.source + " · " + route.tool + " " + JSON.stringify(route.args || {});
+    explanationCard.appendChild(el("div", { text: routeText, className: "routed-via mono" }));
+
+    resultBox.appendChild(explanationCard);
+
+    var findingsNode = renderFindings(data.findings);
+    if (findingsNode) {
+      var findingsCard = el("div", { className: "card" });
+      findingsCard.appendChild(el("h2", { text: "Findings" }));
+      findingsCard.appendChild(findingsNode);
+      resultBox.appendChild(findingsCard);
+    }
+  }
+
+  function renderError(message) {
+    clear(resultBox);
+    resultBox.appendChild(el("div", { text: message, className: "card alert-danger" }));
+  }
+
+  // Options are the models mimOE currently has loaded (from /api/status or
+  // /api/model's response), never free text -- the dropdown can only ever
+  // offer a choice the server already validated.
+  function populateModelSelect(models, currentModel) {
+    clear(modelSelect);
+    if (models.length === 0) {
+      modelSelect.appendChild(el("option", { text: currentModel || "unreachable" }));
+      modelSelect.disabled = true;
+      return;
+    }
+    models.forEach(function (model) {
+      var option = el("option", { text: model });
+      option.value = model;
+      if (model === currentModel) {
+        option.selected = true;
+      }
+      modelSelect.appendChild(option);
+    });
+    modelSelect.disabled = false;
+  }
+
+  function loadStatus() {
+    fetch("/api/status")
+      .then(function (response) { return response.json(); })
+      .then(function (data) {
+        populateModelSelect(data.models || [], data.model);
+        if (data.tip) {
+          tipBox.textContent = data.tip;
+          tipBox.hidden = false;
+        }
+      })
+      .catch(function () {
+        populateModelSelect([], "unreachable");
+      });
+  }
+
+  modelSelect.addEventListener("change", function () {
+    var requestedModel = modelSelect.value;
+    modelSelect.disabled = true;
+
+    fetch("/api/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: requestedModel }),
+    })
+      .then(function (response) {
+        return response.json().then(function (data) {
+          return { ok: response.ok, data: data };
+        });
+      })
+      .then(function (result) {
+        if (!result.ok) {
+          renderError(result.data.error || "Could not switch model.");
+          loadStatus();
+          return;
+        }
+        populateModelSelect(result.data.models || [], result.data.model);
+        tipBox.hidden = !result.data.tip;
+        if (result.data.tip) {
+          tipBox.textContent = result.data.tip;
+        }
+      })
+      .catch(function () {
+        renderError("Could not reach the agent.");
+        loadStatus();
+      });
+  });
+
+  function askQuestion(question) {
+    question = question.trim();
+    if (!question) {
+      return;
+    }
+    questionInput.value = question;
+
+    clear(resultBox);
+    resultBox.appendChild(el("p", { text: "Asking...", className: "muted" }));
+
+    fetch("/api/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: question }),
+    })
+      .then(function (response) {
+        return response.json().then(function (data) {
+          return { ok: response.ok, data: data };
+        });
+      })
+      .then(function (result) {
+        if (!result.ok) {
+          renderError(result.data.error || "Something went wrong.");
+          return;
+        }
+        renderResult(result.data);
+      })
+      .catch(function () {
+        renderError("Could not reach the agent.");
+      });
+  }
+
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    askQuestion(questionInput.value);
+  });
+
+  QUICK_QUESTIONS.forEach(function (question) {
+    var chip = el("button", { text: question, className: "chip-btn" });
+    chip.type = "button";
+    chip.addEventListener("click", function () {
+      askQuestion(question);
+    });
+    chipRow.appendChild(chip);
+  });
+
+  function askAboutValue(input, template) {
+    // Browser-side number inputs already reject non-numeric characters;
+    // this is a UX nicety, not a security boundary -- the server applies
+    // its own validation regardless of what's asked here.
+    if (!input.checkValidity() || !input.value) {
+      input.reportValidity();
+      return;
+    }
+    askQuestion(template.replace("{value}", input.value));
+  }
+
+  document.getElementById("port-ask-btn").addEventListener("click", function () {
+    askAboutValue(portInput, "what's on port {value}?");
+  });
+  document.getElementById("pid-ask-btn").addEventListener("click", function () {
+    askAboutValue(pidInput, "tell me about process {value}");
+  });
+  portInput.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") askAboutValue(portInput, "what's on port {value}?");
+  });
+  pidInput.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") askAboutValue(pidInput, "tell me about process {value}");
+  });
+
+  loadStatus();
+})();
+</script>
+</body>
+</html>

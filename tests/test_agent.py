@@ -3,7 +3,9 @@ from unittest.mock import patch
 from mimoe_port_check.agent import (
     INVALID_PID_TOOL,
     OFF_TOPIC_TOOL,
+    MimOEPhaseError,
     _print_welcome,
+    dedupe_consecutive_sentences,
     deterministic_explanation,
     find_exposure_contradiction,
     find_ungrounded_claims,
@@ -12,11 +14,15 @@ from mimoe_port_check.agent import (
     format_list_ports,
     has_nothing_to_explain,
     is_on_topic,
+    list_ports_summary,
+    model_tip,
+    process_question,
     resolve_route,
     run_tool,
     summarize_notable,
     trim_to_complete_sentence,
 )
+from mimoe_port_check.client import MimOEConnectionError
 from mimoe_port_check.config import Config
 from mimoe_port_check.router import Route
 from mimoe_port_check.tools import ExposureReport, PortEntry, ProcessDetails
@@ -79,6 +85,19 @@ def test_format_list_ports_summary_line_counts():
     summary_line = text.splitlines()[0]
 
     assert summary_line == "3 listening ports, 2 exposed to network, 1 high risk"
+
+
+def test_list_ports_summary_matches_format_list_ports_first_line():
+    entries = [
+        _port_entry(port=22, pid=1, command="sshd", exposed_to_network=True, risk="HIGH"),
+        _port_entry(port=5432, pid=2, command="postgres", exposed_to_network=False, risk="LOW"),
+    ]
+
+    assert list_ports_summary(entries) == format_list_ports(entries).splitlines()[0]
+
+
+def test_list_ports_summary_empty():
+    assert list_ports_summary([]) == "No listening TCP ports found."
 
 
 def test_format_list_ports_groups_by_process():
@@ -482,3 +501,121 @@ def test_trim_to_complete_sentence_keeps_full_text_past_abbreviation():
     text = "Consider changing the key, e.g. to a random value, for better security."
 
     assert trim_to_complete_sentence(text) == text
+
+
+def test_model_tip_for_smollm():
+    assert model_tip("smollm-360m") is not None
+
+
+def test_model_tip_none_for_other_models():
+    assert model_tip("qwen3-1.7b") is None
+
+
+@patch("mimoe_port_check.agent.resolve_route")
+def test_process_question_off_topic(mock_resolve_route):
+    mock_resolve_route.return_value = Route(tool=OFF_TOPIC_TOOL, args={}, source="off_topic")
+
+    result = process_question("what's the weather?", CONFIG, None)
+
+    assert result.findings_text is None
+    assert result.findings_data is None
+    assert result.warnings == []
+    assert result.model == CONFIG.model
+
+
+@patch("mimoe_port_check.agent.resolve_route")
+def test_process_question_invalid_pid(mock_resolve_route):
+    mock_resolve_route.return_value = Route(tool=INVALID_PID_TOOL, args={}, source="invalid_input")
+
+    result = process_question("process abc", CONFIG, None)
+
+    assert result.findings_text is None
+    assert "numeric PID" in result.explanation
+
+
+@patch("mimoe_port_check.agent.run_tool")
+@patch("mimoe_port_check.agent.resolve_route")
+def test_process_question_has_nothing_to_explain_skips_model(mock_resolve_route, mock_run_tool):
+    route = Route(tool="check_exposure", args={"port": 9999}, source="model")
+    mock_resolve_route.return_value = route
+    mock_run_tool.return_value = ("Port 9999 is not currently listening.", ExposureReport(port=9999, found=False))
+
+    with patch("mimoe_port_check.agent.chat_completion") as mock_chat:
+        result = process_question("what's on port 9999?", CONFIG, None)
+        mock_chat.assert_not_called()
+
+    assert result.findings_text == "Port 9999 is not currently listening."
+    assert "not currently listening" in result.explanation
+    assert result.route is route
+
+
+@patch("mimoe_port_check.agent.chat_completion")
+@patch("mimoe_port_check.agent.run_tool")
+@patch("mimoe_port_check.agent.resolve_route")
+def test_process_question_normal_flow_with_warning(mock_resolve_route, mock_run_tool, mock_chat):
+    route = Route(tool="list_ports", args={}, source="fallback")
+    mock_resolve_route.return_value = route
+    entries = [_port_entry(port=8083, pid=900, command="mimoe", risk="MEDIUM", risk_note="Exposed.")]
+    mock_run_tool.return_value = ("1 listening port, 1 exposed to network, 0 high risk", entries)
+    # Explanation mentions a port (9090) that isn't in the notable summary --
+    # should surface as a warning, same as the CLI does.
+    mock_chat.return_value = "Port 9090 is also open."
+
+    result = process_question("what's open?", CONFIG, None)
+
+    assert result.findings_text is not None
+    assert result.explanation == "Port 9090 is also open."
+    assert result.warnings != []
+    assert result.route is route
+
+
+@patch("mimoe_port_check.agent.resolve_route")
+def test_process_question_wraps_routing_mimoe_error(mock_resolve_route):
+    mock_resolve_route.side_effect = MimOEConnectionError("no connection")
+
+    try:
+        process_question("what's open?", CONFIG, None)
+        assert False, "expected MimOEPhaseError"
+    except MimOEPhaseError as exc:
+        assert exc.phase_context == "while choosing a tool"
+
+
+@patch("mimoe_port_check.agent.chat_completion")
+@patch("mimoe_port_check.agent.run_tool")
+@patch("mimoe_port_check.agent.resolve_route")
+def test_process_question_wraps_explain_mimoe_error(mock_resolve_route, mock_run_tool, mock_chat):
+    route = Route(tool="list_ports", args={}, source="fallback")
+    mock_resolve_route.return_value = route
+    entries = [_port_entry(port=8083, pid=900, command="mimoe", risk="MEDIUM", risk_note="Exposed.")]
+    mock_run_tool.return_value = ("findings text", entries)
+    mock_chat.side_effect = MimOEConnectionError("no connection")
+
+    try:
+        process_question("what's open?", CONFIG, None)
+        assert False, "expected MimOEPhaseError"
+    except MimOEPhaseError as exc:
+        assert exc.phase_context == "for an explanation"
+
+
+def test_dedupe_consecutive_sentences_collapses_real_observed_loop():
+    # Real observed shape: the same sentence repeated 8 times, ending in a
+    # dangling fragment (trim_to_complete_sentence handles that part).
+    text = "The agent is listening on port 8083. " * 8 + "The agent is listening on port 8"
+
+    result = dedupe_consecutive_sentences(text)
+
+    assert result == "The agent is listening on port 8083. The agent is listening on port 8"
+    assert result.count("The agent is listening on port 8083.") == 1
+
+
+def test_dedupe_consecutive_sentences_leaves_non_consecutive_repeats_alone():
+    text = "Port 22 is exposed. Consider restricting it. Port 22 is exposed."
+
+    result = dedupe_consecutive_sentences(text)
+
+    assert result == text
+    assert result.count("Port 22 is exposed.") == 2
+
+
+def test_dedupe_consecutive_sentences_leaves_single_sentence_alone():
+    assert dedupe_consecutive_sentences("Port 22 is exposed.") == "Port 22 is exposed."

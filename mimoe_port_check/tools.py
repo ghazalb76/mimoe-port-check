@@ -374,6 +374,7 @@ class ExposureReport:
     service_name: str = ""
     risk: str = ""
     risk_note: str = ""
+    pid: int | None = None
 
 
 def check_exposure(port: int) -> ExposureReport:
@@ -393,6 +394,7 @@ def check_exposure(port: int) -> ExposureReport:
                 service_name=entry.service_name,
                 risk=entry.risk,
                 risk_note=entry.risk_note,
+                pid=entry.pid,
             )
 
     return ExposureReport(port=port, found=False)

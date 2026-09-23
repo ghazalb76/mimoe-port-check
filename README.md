@@ -54,6 +54,59 @@ Then ask things like:
 
 Type `exit` or Ctrl-D to quit.
 
+## Web UI
+
+A minimal local alternative to the CLI, same agent underneath:
+
+```bash
+python run_web.py               # http://127.0.0.1:8090, Ctrl-C to stop
+python run_web.py --port 8123   # pick a different port
+```
+
+Open the printed URL in a browser: it shows the model in use (and the
+SmolLM tip, if applicable), a question box, findings as a table with
+colored risk badges, the explanation, any warnings, and how the question
+was routed. Follow-ups work the same as the CLI (e.g. ask about a port,
+then "is it risky?").
+
+It's `mimoe_port_check/web.py` (a stdlib-only `http.server`, no new
+dependency) plus one static `mimoe_port_check/static/index.html` (plain
+HTML/CSS/JS, no build step) calling `GET /api/status` and
+`POST /api/ask`. Both the CLI and the web UI call the exact same
+`agent.process_question()` — the web UI doesn't reimplement any agent
+logic, just renders its structured result.
+
+**Security choices specific to the web UI** (see [Security](#security) for
+everything shared with the CLI, like redaction and the localhost-only
+inference guard, which apply here unchanged):
+- Binds to `127.0.0.1` only, and refuses to start otherwise.
+- Single-threaded (`HTTPServer`, not `ThreadingHTTPServer`): there's one
+  global, process-wide "last question" used for follow-ups (a deliberate
+  simplification — this is a single-operator tool, not a multi-user
+  service), and single-threading makes it impossible for two concurrent
+  requests to race on it.
+- The `Host` header must resolve to `localhost`/`127.0.0.1`/`::1` (parsed,
+  not prefix-matched, so `127.0.0.1.evil.com` is correctly rejected) —
+  the standard defense against DNS rebinding, where a page on an
+  attacker-controlled domain gets your browser to connect to `127.0.0.1`
+  while still sending that domain in the `Host` header.
+- `Origin`, when a browser sends one, must be exactly this server's own
+  origin; absent is allowed (non-browser clients and same-origin `fetch()`
+  calls don't send one).
+- No CORS headers, ever, and the API only accepts
+  `Content-Type: application/json`. Both are real CSRF defenses, not just
+  omissions: a cross-origin `fetch()` with a JSON body triggers a
+  preflight `OPTIONS` request first, which gets no CORS permission here,
+  so the browser blocks the real request before it's sent — and a plain
+  HTML `<form>` (which can fire a simple, non-preflighted cross-origin
+  POST) can't set `Content-Type: application/json` in the first place.
+- Request bodies are capped at 4KB and questions at 500 characters,
+  rejected before `process_question` ever runs.
+- The frontend JS only ever writes system- or model-derived text (process
+  names, args, the model's explanation, warnings) via `textContent`,
+  never `innerHTML` — that data is untrusted, per the same reasoning as
+  the CLI's prompt-injection note in Security.
+
 ## Approach and design decisions
 
 **Model picks a tool via JSON; code validates and falls back to keywords.**
@@ -266,6 +319,14 @@ displayed, as a second layer.
   them would be misclassified. Each was chosen to avoid false positives at
   the cost of missing some real issues -- see the code comments in
   `agent.py` for the specific tradeoffs.
+- **SmolLM2 sometimes contradicts the risk level it was given, and there's
+  no check for this.** E.g. calling a LOW-risk, localhost-only port "not
+  safe" -- the opposite problem from the exposure-contradiction check above
+  (which only compares *exposure* direction, not risk-level wording). The
+  code-computed findings are shown before the model's prose specifically so
+  a wrong risk-level characterization doesn't stand alone as the only thing
+  the user sees; larger models (see Model comparison) make this less
+  frequent but haven't eliminated it in testing.
 - **macOS only, for now.** `list_ports`/`inspect_process` parse `lsof`/`ps` output
   in their macOS (BSD) format.
 - **UDP sockets are excluded from `list_ports`.** UDP has no connection state

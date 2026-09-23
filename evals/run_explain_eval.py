@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mimoe_port_check.agent import (  # noqa: E402
     EXPLAIN_SYSTEM_PROMPT,
+    dedupe_consecutive_sentences,
     deterministic_explanation,
     find_exposure_contradiction,
     find_ungrounded_claims,
@@ -108,7 +109,9 @@ def main() -> None:
             print(f"  [could not reach mimOE] {exc}\n")
             continue
 
-        explanation_text = trim_to_complete_sentence(strip_think_blocks(answer).strip())
+        explanation_text = strip_think_blocks(answer).strip()
+        explanation_text = dedupe_consecutive_sentences(explanation_text)
+        explanation_text = trim_to_complete_sentence(explanation_text)
         print(f"  ({latencies_seconds[-1] * 1000:.0f}ms) model explanation: {explanation_text}")
 
         ungrounded = find_ungrounded_claims(explanation_text, notable_summary)

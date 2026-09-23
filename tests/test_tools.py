@@ -209,6 +209,7 @@ def test_check_exposure_found(mock_run):
     assert report.found is True
     assert report.exposed_to_network is True
     assert report.service_name == "SSH"
+    assert report.pid == 111
 
 
 @patch("mimoe_port_check.tools.subprocess.run")

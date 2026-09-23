@@ -13,11 +13,35 @@ router.strip_think_blocks) but is never executed or treated as instructions.
 """
 import re
 import sys
+from dataclasses import dataclass
 
 from .client import MimOEError, chat_completion, select_model
 from .config import Config, NonLocalEndpointError, load_config
 from .router import Route, route, strip_think_blocks
 from .tools import ExposureReport, PortEntry, ProcessDetails, check_exposure, inspect_process, list_ports
+
+SMOLLM_TIP_MODEL = "smollm-360m"
+SMOLLM_TIP_MESSAGE = (
+    "Tip: routing accuracy is much better with qwen3-1.7b loaded in "
+    'mimOE -- see the README\'s "Model comparison" section.'
+)
+
+
+def model_tip(model: str) -> str | None:
+    """A one-line nudge shown whenever `model` is the weak-routing default,
+    however it got selected -- shared by the CLI welcome banner and the web
+    UI's status endpoint."""
+    return SMOLLM_TIP_MESSAGE if model == SMOLLM_TIP_MODEL else None
+
+
+class MimOEPhaseError(MimOEError):
+    """A MimOEError raised while routing vs. while explaining need different
+    messages (see main()); this carries which phase failed alongside the
+    original error text, without changing what actually went wrong."""
+
+    def __init__(self, phase_context: str, original: MimOEError):
+        super().__init__(str(original))
+        self.phase_context = phase_context  # e.g. "while choosing a tool"
 
 # /no_think: same reason as ROUTING_SYSTEM_PROMPT in router.py -- Qwen3
 # spends its whole token budget "thinking" otherwise, leaving none for the
@@ -161,6 +185,35 @@ def find_exposure_contradiction(explanation: str, source_summary: str) -> str | 
 _SENTENCE_END_PATTERN = re.compile(r"[.!?](?=\s|$)")
 
 
+def _split_sentences(text: str) -> list[str]:
+    """Split on _SENTENCE_END_PATTERN, keeping a trailing fragment (if any)
+    as its own last element. Shared by dedupe_consecutive_sentences and
+    trim_to_complete_sentence."""
+    sentences = []
+    start = 0
+    for match in _SENTENCE_END_PATTERN.finditer(text):
+        sentences.append(text[start : match.end()].strip())
+        start = match.end()
+    remainder = text[start:].strip()
+    if remainder:
+        sentences.append(remainder)
+    return sentences
+
+
+def dedupe_consecutive_sentences(text: str) -> str:
+    """Collapse a sentence immediately repeated one or more times back to
+    a single occurrence. Observed live: smollm-360m looping the exact same
+    sentence up to 8 times in one response. Exact-match (after whitespace
+    stripping) and consecutive-only -- the same sentence appearing again
+    later, not back to back, is left alone since that could be a
+    legitimate restatement rather than a loop."""
+    deduped: list[str] = []
+    for sentence in _split_sentences(text):
+        if not deduped or sentence != deduped[-1]:
+            deduped.append(sentence)
+    return " ".join(deduped)
+
+
 def trim_to_complete_sentence(text: str) -> str:
     """Cut a trailing incomplete sentence fragment. If no complete sentence
     is found at all, return the text unchanged rather than returning
@@ -171,17 +224,27 @@ def trim_to_complete_sentence(text: str) -> str:
     return text[: matches[-1].end()].strip()
 
 
+def list_ports_summary(entries: list[PortEntry]) -> str:
+    """The one-line count summary ("N listening ports, M exposed, K high
+    risk"), extracted out of format_list_ports so the web UI's JSON API
+    can send it too (shown above the findings table there, not just
+    embedded in the CLI's formatted text)."""
+    if not entries:
+        return "No listening TCP ports found."
+    total = len(entries)
+    exposed_count = sum(1 for e in entries if e.exposed_to_network)
+    high_risk_count = sum(1 for e in entries if e.risk == "HIGH")
+    return (
+        f"{total} listening port{'' if total == 1 else 's'}, "
+        f"{exposed_count} exposed to network, {high_risk_count} high risk"
+    )
+
+
 def format_list_ports(entries: list[PortEntry]) -> str:
     if not entries:
         return "No listening TCP ports found."
 
-    total = len(entries)
-    exposed_count = sum(1 for e in entries if e.exposed_to_network)
-    high_risk_count = sum(1 for e in entries if e.risk == "HIGH")
-    summary = (
-        f"{total} listening port{'' if total == 1 else 's'}, "
-        f"{exposed_count} exposed to network, {high_risk_count} high risk"
-    )
+    summary = list_ports_summary(entries)
 
     # Group by process (command) so a process with several ports shows once,
     # not as several near-identical lines -- keeps output compact.
@@ -344,16 +407,94 @@ def resolve_route(question: str, config: Config, last_route: Route | None, debug
 def _print_welcome(config: Config) -> None:
     print("mimoe-port-check -- local security check agent")
     print(f"Connected to {config.base_url} (model: {config.model})")
-    if config.model == "smollm-360m":
-        print(
-            "Tip: routing accuracy is much better with qwen3-1.7b loaded in "
-            "mimOE -- see the README's \"Model comparison\" section."
-        )
+    tip = model_tip(config.model)
+    if tip:
+        print(tip)
     print('Ask things like "what\'s open on my machine?" or "what\'s on port 5432?"')
     print("Type 'exit' or Ctrl-D to quit.\n")
 
 
-def main(debug: bool = False) -> None:
+@dataclass
+class QuestionResult:
+    """Structured result of process_question -- shared by the CLI and the
+    web UI, each of which renders it its own way."""
+
+    route: Route
+    model: str
+    findings_text: str | None  # CLI-formatted text; None for off-topic/invalid-PID
+    findings_data: list[PortEntry] | ProcessDetails | ExposureReport | None
+    explanation: str  # always present: model prose, deterministic msg, or off-topic/invalid msg
+    warnings: list[str]
+
+
+def process_question(
+    question: str, config: Config, last_route: Route | None, debug: bool = False
+) -> QuestionResult:
+    """Core per-question pipeline: route -> run tool (or short-circuit for
+    off-topic/invalid input) -> explain -> grounding/contradiction checks.
+    Shared by the CLI (main()) and the web UI (web.py) so both behave
+    identically. Raises MimOEPhaseError/ValueError/RuntimeError on failure;
+    callers decide how to display that."""
+    try:
+        chosen_route = resolve_route(question, config, last_route, debug=debug)
+    except MimOEError as exc:
+        raise MimOEPhaseError("while choosing a tool", exc) from exc
+
+    if chosen_route.tool == OFF_TOPIC_TOOL:
+        return QuestionResult(
+            route=chosen_route, model=config.model, findings_text=None,
+            findings_data=None, explanation=OFF_TOPIC_MESSAGE, warnings=[],
+        )
+    if chosen_route.tool == INVALID_PID_TOOL:
+        return QuestionResult(
+            route=chosen_route, model=config.model, findings_text=None,
+            findings_data=None, explanation=INVALID_PID_MESSAGE, warnings=[],
+        )
+
+    tool_output, result = run_tool(chosen_route)
+
+    if has_nothing_to_explain(chosen_route, result):
+        return QuestionResult(
+            route=chosen_route, model=config.model, findings_text=tool_output,
+            findings_data=result, explanation=deterministic_explanation(chosen_route, result),
+            warnings=[],
+        )
+
+    notable_summary = summarize_notable(chosen_route, result)
+    explain_messages = [
+        {"role": "system", "content": EXPLAIN_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Question: {question}\n\n{notable_summary}"},
+    ]
+
+    try:
+        answer = chat_completion(config, explain_messages, temperature=0.1, max_tokens=120)
+    except MimOEError as exc:
+        raise MimOEPhaseError("for an explanation", exc) from exc
+
+    explanation_text = strip_think_blocks(answer).strip()
+    explanation_text = dedupe_consecutive_sentences(explanation_text)
+    explanation_text = trim_to_complete_sentence(explanation_text)
+
+    warnings: list[str] = []
+    ungrounded = find_ungrounded_claims(explanation_text, notable_summary)
+    if ungrounded:
+        parts = [f"{kind} {sorted(numbers)}" for kind, numbers in ungrounded.items()]
+        warnings.append(f"explanation mentions {' and '.join(parts)} not present in the findings -- may be fabricated")
+
+    contradiction = find_exposure_contradiction(explanation_text, notable_summary)
+    if contradiction:
+        warnings.append(f"{contradiction} -- trust the findings above")
+
+    return QuestionResult(
+        route=chosen_route, model=config.model, findings_text=tool_output,
+        findings_data=result, explanation=explanation_text, warnings=warnings,
+    )
+
+
+def resolve_config() -> Config:
+    """Load config and auto-select a model if MIMOE_MODEL wasn't set,
+    exiting with a clear message on failure. Shared by the CLI and the web
+    UI so both start up identically."""
     try:
         config = load_config()
     except NonLocalEndpointError as exc:
@@ -367,6 +508,11 @@ def main(debug: bool = False) -> None:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
 
+    return config
+
+
+def main(debug: bool = False) -> None:
+    config = resolve_config()
     _print_welcome(config)
 
     last_route: Route | None = None
@@ -384,62 +530,31 @@ def main(debug: bool = False) -> None:
             break
 
         try:
-            chosen_route = resolve_route(question, config, last_route, debug=debug)
-        except MimOEError as exc:
-            print(f"[Could not reach mimOE while choosing a tool] {exc}\n")
+            result = process_question(question, config, last_route, debug=debug)
+        except MimOEPhaseError as exc:
+            print(f"[Could not reach mimOE {exc.phase_context}] {exc}\n")
             continue
-
-        if chosen_route.tool == OFF_TOPIC_TOOL:
-            print(f"{OFF_TOPIC_MESSAGE}\n")
-            continue
-        if chosen_route.tool == INVALID_PID_TOOL:
-            print(f"{INVALID_PID_MESSAGE}\n")
-            continue
-
-        try:
-            tool_output, result = run_tool(chosen_route)
         except (ValueError, RuntimeError) as exc:
-            print(f"[Error running tool '{chosen_route.tool}'] {exc}\n")
+            print(f"[Error running tool] {exc}\n")
             continue
 
-        last_route = chosen_route
+        last_route = result.route
+
+        if result.findings_text is None:
+            # Off-topic / invalid-PID: a bare message, no tool ran, no
+            # routing footer -- matches the pre-refactor CLI output exactly.
+            print(f"{result.explanation}\n")
+            continue
 
         # The tool output (code-computed, deterministic) is always shown: it's
         # the source of truth. The model's explanation below is a best-effort,
         # occasionally-unreliable plain-language layer on top of it, not a
         # replacement for it -- see README "Limitations".
-        print(f"\nFindings:\n{tool_output}\n")
-
-        if has_nothing_to_explain(chosen_route, result):
-            print(f"Model explanation: {deterministic_explanation(chosen_route, result)}")
-            print(f"(routed via {chosen_route.source}: {chosen_route.tool} {chosen_route.args})\n")
-            continue
-
-        notable_summary = summarize_notable(chosen_route, result)
-        explain_messages = [
-            {"role": "system", "content": EXPLAIN_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Question: {question}\n\n{notable_summary}"},
-        ]
-
-        try:
-            answer = chat_completion(config, explain_messages, temperature=0.1, max_tokens=120)
-        except MimOEError as exc:
-            print(f"[Could not reach mimOE for an explanation] {exc}\n")
-            continue
-
-        explanation_text = trim_to_complete_sentence(strip_think_blocks(answer).strip())
-        print(f"Model explanation: {explanation_text}")
-
-        ungrounded = find_ungrounded_claims(explanation_text, notable_summary)
-        if ungrounded:
-            parts = [f"{kind} {sorted(numbers)}" for kind, numbers in ungrounded.items()]
-            print(f"[warning: explanation mentions {' and '.join(parts)} not present in the findings -- may be fabricated]")
-
-        contradiction = find_exposure_contradiction(explanation_text, notable_summary)
-        if contradiction:
-            print(f"[warning: {contradiction} -- trust the findings above]")
-
-        print(f"(routed via {chosen_route.source}: {chosen_route.tool} {chosen_route.args})\n")
+        print(f"\nFindings:\n{result.findings_text}\n")
+        print(f"Model explanation: {result.explanation}")
+        for warning in result.warnings:
+            print(f"[warning: {warning}]")
+        print(f"(routed via {result.route.source}: {result.route.tool} {result.route.args})\n")
 
 
 if __name__ == "__main__":
