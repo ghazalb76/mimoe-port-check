@@ -2,6 +2,8 @@
 
 A small local security-check agent: it inspects listening ports and processes on this machine only, labels risk in code, never the model, and asks a model running in mimOE to explain the findings in plain language. This data is sensitive, so the agent refuses to run against anything but a localhost mimOE endpoint.
 
+The core agent is plain HTTP calls to mimOE in a few small files; the web UI, evals, and guardrails are extras built on the same core.
+
 ![mimoe-port-check web UI](docs/screenshot.png)
 
 *Web UI on qwen3-1.7b. The screenshot shows only mimOE and a local test server, no identifying system data.*
@@ -13,7 +15,7 @@ A small local security-check agent: it inspects listening ports and processes on
 - SmolLM2-360M scored 0/16 on routing, so the design never depends on the model to work correctly.
 - Qwen3's `<think>` reasoning block consumed the entire token budget before it could answer. Fixed with a literal `/no_think` directive.
 - qwen3-4b's hallucinations are more specific (fabricated port numbers) than qwen3-1.7b's, and so more believable, not less.
-- The agent flags mimOE's own endpoint as network-exposed, MEDIUM risk, when its API key is left at the default shared value.
+- The agent flags mimOE's own endpoint as network-exposed (MEDIUM) and notes that its API key is a shared default.
 - The web UI's own listening port shows up as localhost-only, confirming the server actually binds to `127.0.0.1` as designed.
 
 ## Requirements
@@ -25,6 +27,8 @@ A small local security-check agent: it inspects listening ports and processes on
 ## Quick start
 
 **CLI:**
+
+0. Open mimOE Studio, go to AI Models, load `qwen3-1.7b` (or any of the three).
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
@@ -50,13 +54,35 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-## Design decisions
+## Exploring the mimOE endpoint
+
+Base URL: `http://localhost:8083/mimik-ai/openai/v1`
+
+```bash
+curl http://localhost:8083/mimik-ai/openai/v1/chat/completions \
+  -H "Authorization: Bearer 1234" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "qwen3-1.7b", "messages": [{"role": "user", "content": "hello"}]}'
+```
+
+What curling it first, before writing any code, taught me:
+
+- It's an OpenAI-compatible `/chat/completions` endpoint, so a plain `requests` POST is enough, no SDK needed.
+- `/v1/models` lists whatever's currently loaded; mimOE only keeps one model loaded at a time, so switching in Studio unloads the previous one.
+- The API key defaults to a shared, publicly-documented value (`1234`), not a secret, which is exactly why an exposed mimOE endpoint is a real finding, not just noise.
+- Qwen3 is a reasoning model: it emits a `<think>` block by default and needs a literal `/no_think` directive to skip straight to the answer.
+
+## Approach
 
 - Model picks a tool via JSON, code validates and falls back to keywords. Small local models aren't reliable at structured output, so instead of a framework's function-calling machinery, the agent asks for one small JSON object from a 3-tool whitelist and validates every field before anything runs.
 - Invalid, missing, or rejected model output falls back to a deterministic keyword matcher over the user's own text, never over what the model produced. See [`router.py`](mimoe_port_check/router.py).
-- No agent framework, raw `requests`, `python-dotenv` for config. A framework's function-calling layer wouldn't fix the unreliability above, and talking to mimOE is one POST to one endpoint: not worth an SDK dependency at this scale.
 - Risk labels come from code, not the model. See [`tools.py`](mimoe_port_check/tools.py): HIGH (sensitive service, exposed), MEDIUM (anything else exposed), LOW (localhost-only), INFO (a recognized broadcast service like AirPlay, where exposure is expected).
 - Known processes are matched by identity first, path-verified against their real executable, since a declared name is spoofable. See [docs/DETAILS.md](docs/DETAILS.md#known-process-labeling) for how, and why `mimoe` itself is a deliberate MEDIUM-not-INFO exception.
+
+## Framework and tooling choices
+
+- No agent framework (LangChain, etc.). A framework's function-calling layer wouldn't fix the model-reliability problem above, and mimOE speaks one OpenAI-compatible endpoint, so a raw `requests` POST keeps every request and response visible without an extra abstraction layer.
+- `python-dotenv` for `.env` loading: the one pinned dependency, worth it for the ergonomics over manual `os.environ` parsing.
 
 ## How the components connect
 
@@ -112,11 +138,11 @@ xychart-beta
 
 ## Limitations
 
-- The model's explanation is unreliable, so it's off the critical path. Findings show first, the model is skipped when there's nothing to explain.
-- Grounding and contradiction checks flag some problems, not all. They don't catch the model contradicting the risk *level* it was given (e.g. calling LOW "not safe").
-- Routing leans on the keyword fallback more than the model, especially with `smollm-360m`. A model-chosen port/pid is rejected unless that exact number appears in the question.
-- The grounding, contradiction, and off-topic checks are conservative heuristics, not guarantees. Chosen to avoid false positives over catching everything.
-- macOS only, UDP excluded from `list_ports`, follow-up context is a single-slot memory, not full conversation history.
+- Model output can be wrong. Small local models sometimes misstate findings, so the design keeps them off the critical path: findings from code are always shown first, and the model is skipped when there's nothing to explain.
+- Safety checks are heuristics, not guarantees. Grounding and contradiction checks catch invented ports/PIDs and wrong exposure claims, but not every mistake (e.g. calling a LOW port "not safe"). They're tuned to avoid false alarms rather than catch everything.
+- Routing depends on model size. With `smollm-360m`, the keyword fallback does most of the routing. A model-chosen port or PID is only accepted if that number appears in the question.
+- One known process is matched by name only. `mimoe` has no fixed install path, so it can't be path-verified and a process could spoof its name. The impact is low: an exposed `mimoe` is still MEDIUM, and a localhost one gets LOW, the same as any unknown local port.
+- Scope: macOS only, TCP only, and follow-ups remember only the last question.
 
 ## What's next
 
@@ -127,7 +153,7 @@ xychart-beta
 
 ## How I used AI assistance
 
-**My workflow:** curl the endpoint first to confirm it worked, get a plan approved before code, land a commit per step, tests green after each one. Full log in [`NOTES.md`](NOTES.md), written as we went, not reconstructed after.
+**My workflow:** curl the endpoint first to confirm it worked, get a plan approved before code, group work into meaningful commits with tests green first. Full log in [`NOTES.md`](NOTES.md), written as we went, not reconstructed after.
 
 **Where I steered or corrected:**
 - Asked for a design that anticipated model unreliability (JSON-with-fallback routing, code-owned risk labels) rather than assuming a capable model, and required the redaction rule up front.
@@ -147,6 +173,6 @@ xychart-beta
 |---|---|
 | `/eval-model <model-id>` | The model comparison numbers above came from running both evals against each loaded model in turn, not guessing. |
 | `/smoke-test` | Live testing found real bugs mocked tests missed. Makes that live pass repeatable against controlled fixtures. |
-| `/commit-step` | Every change landed as its own small commit, tests green first, reasoning explained. |
+| `/commit-step` | Work is grouped into meaningful commits, tests green first, reasoning explained. |
 | `/log-session` | `NOTES.md` was written as-we-went, in a consistent format. |
 | `/security-check` | Re-checks the [Security](#security) invariants before a push, not just at initial review. |
