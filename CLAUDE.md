@@ -33,3 +33,9 @@ this repo was actually built.
   `localhost`/`127.0.0.1`/`::1`. No override flag for either.
 - **No attribution lines in commits.**
 - **Run the full test suite (`pytest`) after each commit.**
+- **Group commits by logical unit, not by every small change.** One
+  meaningful commit per feature, per fix-with-its-tests, or per docs pass,
+  not a commit per tiny edit. Write the message like a senior full-stack
+  engineer: an imperative subject line under 72 characters that says what
+  changed, a blank line, then a short body explaining why and any notable
+  tradeoff. No filler, no attribution lines.
