@@ -4,6 +4,7 @@ from mimoe_port_check.agent import (
     INVALID_PID_TOOL,
     OFF_TOPIC_TOOL,
     MimOEPhaseError,
+    QuestionResult,
     _print_welcome,
     dedupe_consecutive_sentences,
     deterministic_explanation,
@@ -15,6 +16,7 @@ from mimoe_port_check.agent import (
     has_nothing_to_explain,
     is_on_topic,
     list_ports_summary,
+    main,
     model_tip,
     process_question,
     resolve_route,
@@ -411,6 +413,29 @@ def test_resolve_route_does_not_flag_valid_pid_question():
     assert result.tool == "inspect_process"
 
 
+@patch("mimoe_port_check.agent.process_question")
+@patch("mimoe_port_check.agent.resolve_config", return_value=CONFIG)
+@patch("builtins.input")
+def test_main_does_not_clobber_last_route_on_off_topic_interjection(mock_input, mock_resolve_config, mock_process_question):
+    # Regression: an earlier refactor updated last_route unconditionally,
+    # so an off-topic question in between two real questions broke the
+    # next referential follow-up ("is it risky?").
+    real_route = Route(tool="check_exposure", args={"port": 22}, source="model")
+    off_topic_route = Route(tool=OFF_TOPIC_TOOL, args={}, source="off_topic")
+
+    mock_input.side_effect = ["what's on port 22?", "what's the weather?", "is it risky?", "exit"]
+    mock_process_question.side_effect = [
+        QuestionResult(route=real_route, model="smollm-360m", findings_text="text", findings_data=None, explanation="exp1", warnings=[]),
+        QuestionResult(route=off_topic_route, model="smollm-360m", findings_text=None, findings_data=None, explanation="off-topic msg", warnings=[]),
+        QuestionResult(route=real_route, model="smollm-360m", findings_text="text2", findings_data=None, explanation="exp2", warnings=[]),
+    ]
+
+    main()
+
+    third_call_last_route = mock_process_question.call_args_list[2].args[2]
+    assert third_call_last_route is real_route
+
+
 def test_find_exposure_contradiction_double_negative_vs_exposed_summary():
     # Real live case: summary says exposed (MEDIUM, mimOE/shared-key note);
     # explanation says "not exposed" twice and never says a standalone
@@ -595,6 +620,21 @@ def test_process_question_wraps_explain_mimoe_error(mock_resolve_route, mock_run
         assert False, "expected MimOEPhaseError"
     except MimOEPhaseError as exc:
         assert exc.phase_context == "for an explanation"
+
+
+@patch("mimoe_port_check.agent.run_tool")
+@patch("mimoe_port_check.agent.resolve_route")
+def test_process_question_run_tool_error_includes_tool_name(mock_resolve_route, mock_run_tool):
+    route = Route(tool="inspect_process", args={"pid": 512}, source="model")
+    mock_resolve_route.return_value = route
+    mock_run_tool.side_effect = RuntimeError("boom")
+
+    try:
+        process_question("tell me about process 512", CONFIG, None)
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "inspect_process" in str(exc)
+        assert "boom" in str(exc)
 
 
 def test_dedupe_consecutive_sentences_collapses_real_observed_loop():

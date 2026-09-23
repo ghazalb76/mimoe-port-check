@@ -278,4 +278,43 @@ green after every one.
    since both have periods immediately followed by more of the same
    sentence or another digit.
 
+## Session 5 — web UI live-testing feedback — 2026-09-23
+
+More live testing, this time of the web UI on the `ui` branch. Also
+noticed partway through that another session was concurrently committing
+a model-picker feature (dropdown to switch `MIMOE_MODEL` at runtime,
+`POST /api/model`) to the same branch -- unrelated to this feedback, and
+folded in rather than untangled, since everything tested compatible.
+
+1. **Explanation repetition**: smollm-360m looped the same sentence up to
+   8 times in one response (same underlying issue documented earlier, just
+   observed again via the web UI this time). `dedupe_consecutive_sentences`
+   collapses an immediately-repeated sentence to one occurrence -- wired
+   into `process_question`, so both the CLI and the web UI get it for
+   free through the shared pipeline.
+2. **Layout**: the web UI showed the findings table before the
+   explanation, and never showed the "N listening ports, M exposed, K
+   high risk" summary line at all (it only existed inside the CLI's
+   preformatted text, never sent over the JSON API). Extracted
+   `list_ports_summary()`, added it to the API response, and reordered
+   the page to summary + explanation first, findings table below. CLI
+   terminal output unchanged -- this was UI-layout-specific feedback.
+3. **Sort + collapse**: findings are now sorted HIGH/MEDIUM/LOW/INFO
+   (client-side), with INFO rows (AirPlay, Handoff, etc. -- expected/
+   benign) collapsed behind a "Show N expected services" toggle so they
+   don't bury the notable rows.
+4. **Own port unrecognized**: the web UI's own listening port showed up
+   as "Unknown service" in its own findings. Since the port number is
+   configurable (`--port`), this couldn't be a static table entry; instead
+   `_relabel_own_port()` matches on the server's actual bound port AND
+   `os.getpid()` together (port alone isn't enough -- a different process
+   could coincidentally sit on the same port number) and only relabels to
+   LOW when confirmed not exposed to the network, leaving the normal risk
+   label alone if that's ever not the case. Needed a small `tools.py`
+   addition: `ExposureReport` didn't carry a `pid` field at all, even
+   though `check_exposure()` already had it available internally from the
+   `list_ports()` lookup it does -- added the field and threaded it
+   through, which also unlocked pid-matching for `check_exposure`
+   findings, not just `list_ports`.
+
 _(continue appending entries below as work progresses)_

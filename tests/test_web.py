@@ -342,6 +342,71 @@ def test_post_ask_round_trip(mock_process_question, server):
     assert server.last_route is route  # follow-up context updated
 
 
+@patch("mimoe_port_check.web.process_question")
+def test_post_ask_off_topic_does_not_clobber_last_route(mock_process_question, server):
+    # Regression: last_route was updated unconditionally, so an off-topic
+    # question in between two real ones broke the next referential
+    # follow-up. Seed last_route with a real prior route, then send an
+    # off-topic result and confirm last_route is untouched.
+    real_route = Route(tool="check_exposure", args={"port": 22}, source="model")
+    server.last_route = real_route
+    off_topic_route = Route(tool="off_topic", args={}, source="off_topic")
+    mock_process_question.return_value = QuestionResult(
+        route=off_topic_route, model="smollm-360m", findings_text=None,
+        findings_data=None, explanation="I can only help with...", warnings=[],
+    )
+
+    conn = _connection(server)
+    body = json.dumps({"question": "what's the weather?"}).encode()
+    conn.request(
+        "POST", "/api/ask", body=body,
+        headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+    )
+    resp = conn.getresponse()
+    resp.read()
+    conn.close()
+
+    assert resp.status == 200
+    assert server.last_route is real_route
+
+
+def test_post_ask_non_ascii_digit_content_length_rejected_gracefully(server):
+    # str.isdigit() returns True for non-ASCII Unicode digits that int()
+    # then rejects -- must fail as a clean 400, not an unhandled ValueError.
+    body = json.dumps({"question": "what's open?"}).encode()
+
+    conn = _connection(server)
+    conn.putrequest("POST", "/api/ask")
+    conn.putheader("Content-Type", "application/json")
+    conn.putheader("Content-Length", "²")  # superscript "2", isdigit() == True
+    conn.endheaders()
+    conn.send(body)
+    resp = conn.getresponse()
+    data = json.loads(resp.read())
+    conn.close()
+
+    assert resp.status == 400
+    assert "error" in data
+
+
+@patch("mimoe_port_check.web.process_question")
+def test_post_ask_tool_error_message_includes_tool_name(mock_process_question, server):
+    mock_process_question.side_effect = RuntimeError("'inspect_process': boom")
+
+    conn = _connection(server)
+    body = json.dumps({"question": "tell me about process 512"}).encode()
+    conn.request(
+        "POST", "/api/ask", body=body,
+        headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+    )
+    resp = conn.getresponse()
+    data = json.loads(resp.read())
+    conn.close()
+
+    assert resp.status == 500
+    assert "inspect_process" in data["error"]
+
+
 def test_post_ask_body_too_large_rejected(server):
     conn = _connection(server)
     body = json.dumps({"question": "a" * (MAX_BODY_BYTES + 100)}).encode()

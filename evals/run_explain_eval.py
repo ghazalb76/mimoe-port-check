@@ -17,13 +17,13 @@ Usage:
 """
 import argparse
 import dataclasses
-import json
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from evals._shared import DEFAULT_QUESTIONS_PATH, load_questions  # noqa: E402
 from mimoe_port_check.agent import (  # noqa: E402
     EXPLAIN_SYSTEM_PROMPT,
     dedupe_consecutive_sentences,
@@ -38,21 +38,6 @@ from mimoe_port_check.client import MimOEError, chat_completion  # noqa: E402
 from mimoe_port_check.config import NonLocalEndpointError, load_config  # noqa: E402
 from mimoe_port_check.router import Route, strip_think_blocks  # noqa: E402
 from mimoe_port_check.tools import check_exposure, inspect_process, list_ports  # noqa: E402
-
-DEFAULT_QUESTIONS_PATH = Path(__file__).resolve().parent / "routing_questions.txt"
-
-
-def load_questions(path: Path) -> list[tuple[str, str, dict]]:
-    """Parse `question ||| expected_tool ||| expected_args_json` lines."""
-    questions = []
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        question, expected_tool, expected_args_json = (part.strip() for part in line.split("|||"))
-        questions.append((question, expected_tool, json.loads(expected_args_json)))
-    return questions
-
 
 def run_real_tool(tool: str, tool_args: dict):
     if tool == "list_ports":

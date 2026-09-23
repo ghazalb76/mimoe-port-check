@@ -192,12 +192,19 @@ class Handler(BaseHTTPRequestHandler):
         MAX_BODY_BYTES, then parse the body as a JSON object. Writes the
         rejection response itself and returns None on any failure, so
         callers can just check for None."""
-        content_length_header = self.headers.get("Content-Length")
-        if content_length_header is None or not content_length_header.isdigit():
-            self._reject(400, "missing Content-Length")
+        # int() directly, not str.isdigit() first: isdigit() returns True
+        # for non-ASCII Unicode digits (e.g. "²") that int() then
+        # rejects, which would otherwise raise an uncaught ValueError here
+        # instead of the intended graceful 400.
+        try:
+            content_length = int(self.headers.get("Content-Length"))
+        except (TypeError, ValueError):
+            self._reject(400, "missing or invalid Content-Length")
+            return None
+        if content_length < 0:
+            self._reject(400, "missing or invalid Content-Length")
             return None
 
-        content_length = int(content_length_header)
         if content_length > MAX_BODY_BYTES:
             self._reject(413, f"request body too large (max {MAX_BODY_BYTES} bytes)")
             return None
@@ -247,10 +254,14 @@ class Handler(BaseHTTPRequestHandler):
             self._reject(502, f"could not reach mimOE {exc.phase_context}: {exc}")
             return
         except (ValueError, RuntimeError) as exc:
-            self._reject(500, f"error running tool: {exc}")
+            self._reject(500, f"error running tool {exc}")
             return
 
-        self.server.last_route = result.route
+        if result.findings_text is not None:
+            # Off-topic/invalid-PID results are deliberately excluded: they
+            # aren't a real tool result, so they must not clobber the last
+            # real route a referential follow-up ("is it risky?") would reuse.
+            self.server.last_route = result.route
         _relabel_own_port(result, self.server.server_port, os.getpid())
         self._write_json(200, serialize_question_result(result))
 

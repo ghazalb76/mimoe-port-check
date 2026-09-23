@@ -451,7 +451,10 @@ def process_question(
             findings_data=None, explanation=INVALID_PID_MESSAGE, warnings=[],
         )
 
-    tool_output, result = run_tool(chosen_route)
+    try:
+        tool_output, result = run_tool(chosen_route)
+    except (ValueError, RuntimeError) as exc:
+        raise RuntimeError(f"'{chosen_route.tool}': {exc}") from exc
 
     if has_nothing_to_explain(chosen_route, result):
         return QuestionResult(
@@ -535,16 +538,19 @@ def main(debug: bool = False) -> None:
             print(f"[Could not reach mimOE {exc.phase_context}] {exc}\n")
             continue
         except (ValueError, RuntimeError) as exc:
-            print(f"[Error running tool] {exc}\n")
+            print(f"[Error running tool {exc}]\n")
             continue
-
-        last_route = result.route
 
         if result.findings_text is None:
             # Off-topic / invalid-PID: a bare message, no tool ran, no
             # routing footer -- matches the pre-refactor CLI output exactly.
+            # last_route is deliberately NOT updated here: these aren't a
+            # real tool result, so they must not clobber the last real
+            # route a referential follow-up ("is it risky?") would reuse.
             print(f"{result.explanation}\n")
             continue
+
+        last_route = result.route
 
         # The tool output (code-computed, deterministic) is always shown: it's
         # the source of truth. The model's explanation below is a best-effort,
