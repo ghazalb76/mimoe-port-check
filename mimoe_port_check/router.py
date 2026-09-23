@@ -60,8 +60,15 @@ ROUTING_FEW_SHOT_EXAMPLES: list[tuple[str, str]] = [
     ("Is port 5432 exposed to the network?", '{"tool": "check_exposure", "args": {"port": 5432}}'),
 ]
 
-_PID_PATTERN = re.compile(r"\b(?:pid|process)\s*#?\s*(\d+)\b", re.IGNORECASE)
+_PID_PATTERN = re.compile(r"\b(?:pid|process(?:\s+id)?)\s*#?\s*(\d+)\b", re.IGNORECASE)
 _PORT_PATTERN = re.compile(r"\b(?:port|on)\s*#?\s*(\d{1,5})\b", re.IGNORECASE)
+
+# A number with no "port" keyword ("is 8080 open to the network?") counts as a
+# port only when the question also talks about exposure. Numbers inside an IP
+# address, or counting things ("the 10 open ports"), don't.
+_EXPOSURE_WORD_PATTERN = re.compile(r"\b(?:open|exposed|listening|network)\b", re.IGNORECASE)
+_STANDALONE_NUMBER_PATTERN = re.compile(r"(?<!\d)(?<!\d\.)(\d{1,5})(?!\d|\.\d)")
+_COUNTED_NOUN_PATTERN = re.compile(r"\s+(?:(?:open|listening|exposed)\s+)?(?:ports|processes|services|connections)\b", re.IGNORECASE)
 _JSON_OBJECT_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
 
 # Some models (e.g. Qwen3) emit a <think>...</think> reasoning block before
@@ -197,6 +204,19 @@ def _coerce_int(value: Any) -> int | None:
     return None
 
 
+def _bare_port_number(question: str) -> int | None:
+    """A port number written without the word "port", e.g. "is 8080 open to
+    the network?". None unless the question mentions exposure and has a
+    standalone number in the valid port range that isn't a count."""
+    if not _EXPOSURE_WORD_PATTERN.search(question):
+        return None
+    for match in _STANDALONE_NUMBER_PATTERN.finditer(question):
+        number = int(match.group(1))
+        if 1 <= number <= 65535 and not _COUNTED_NOUN_PATTERN.match(question, match.end()):
+            return number
+    return None
+
+
 def keyword_fallback(question: str) -> Route:
     """Deterministic routing over the user's own text, used when model output is invalid."""
     pid_match = _PID_PATTERN.search(question)
@@ -206,5 +226,9 @@ def keyword_fallback(question: str) -> Route:
     port_match = _PORT_PATTERN.search(question)
     if port_match:
         return Route(tool="check_exposure", args={"port": int(port_match.group(1))}, source="fallback")
+
+    bare_port = _bare_port_number(question)
+    if bare_port is not None:
+        return Route(tool="check_exposure", args={"port": bare_port}, source="fallback")
 
     return Route(tool="list_ports", args={}, source="fallback")

@@ -31,6 +31,7 @@ from mimoe_port_check.agent import (  # noqa: E402
     find_exposure_contradiction,
     find_ungrounded_claims,
     has_nothing_to_explain,
+    strip_markdown,
     summarize_notable,
     trim_to_complete_sentence,
 )
@@ -95,6 +96,7 @@ def main() -> None:
             continue
 
         explanation_text = strip_think_blocks(answer).strip()
+        explanation_text = strip_markdown(explanation_text)
         explanation_text = dedupe_consecutive_sentences(explanation_text)
         explanation_text = trim_to_complete_sentence(explanation_text)
         print(f"  ({latencies_seconds[-1] * 1000:.0f}ms) model explanation: {explanation_text}")

@@ -178,10 +178,63 @@ def test_keyword_fallback_detects_port():
     assert result.args == {"port": 5432}
 
 
+def test_keyword_fallback_detects_process_id_phrasing():
+    # Missed by the eval: "process id 900" has "id" between the keyword and
+    # the number.
+    result = keyword_fallback("show me details for process id 900")
+    assert result.tool == "inspect_process"
+    assert result.args == {"pid": 900}
+
+
+def test_keyword_fallback_detects_pid_shorthand():
+    result = keyword_fallback("what is pid 42 doing?")
+    assert result.tool == "inspect_process"
+    assert result.args == {"pid": 42}
+
+
+def test_keyword_fallback_detects_bare_port_with_exposure_words():
+    # Missed by the eval: no "port" keyword, just a number plus "open"/"network".
+    result = keyword_fallback("is 8080 open to the network?")
+    assert result.tool == "check_exposure"
+    assert result.args == {"port": 8080}
+
+
+def test_keyword_fallback_bare_port_needs_exposure_words():
+    result = keyword_fallback("what is 8080 anyway?")
+    assert result.tool == "list_ports"
+
+
+def test_keyword_fallback_bare_number_that_counts_things_is_not_a_port():
+    result = keyword_fallback("list the 10 open ports")
+    assert result.tool == "list_ports"
+    assert result.args == {}
+
+
+def test_keyword_fallback_ip_address_octets_are_not_ports():
+    result = keyword_fallback("is 127.0.0.1 open to the network?")
+    assert result.tool == "list_ports"
+
+
+def test_keyword_fallback_bare_number_out_of_port_range_is_ignored():
+    result = keyword_fallback("is 99999 open to the network?")
+    assert result.tool == "list_ports"
+
+
 def test_keyword_fallback_defaults_to_list_ports():
     result = keyword_fallback("is anything risky listening?")
     assert result.tool == "list_ports"
     assert result.args == {}
+
+
+@patch("mimoe_port_check.router.chat_completion")
+def test_route_accepts_grounded_process_id_phrasing(mock_chat):
+    mock_chat.return_value = '{"tool": "inspect_process", "args": {"pid": 900}}'
+
+    result = route("show me details for process id 900", CONFIG)
+
+    assert result.tool == "inspect_process"
+    assert result.args == {"pid": 900}
+    assert result.source == "model"
 
 
 @patch("mimoe_port_check.router.chat_completion")

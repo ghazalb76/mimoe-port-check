@@ -8,8 +8,8 @@ Model to test: `$ARGUMENTS` (must already be loaded in mimOE -- mimOE only keeps
    (default `http://localhost:8083/mimik-ai/openai/v1`, from `.env` if set). If
    it's not reachable, stop and say so -- don't run the evals against a dead
    endpoint.
-2. Run `python evals/run_routing_eval.py --model $ARGUMENTS` and
-   `python evals/run_explain_eval.py --model $ARGUMENTS`.
+2. Run `python3 evals/run_routing_eval.py --model $ARGUMENTS` and
+   `python3 evals/run_explain_eval.py --model $ARGUMENTS`.
 3. Summarize both: routing accuracy (model-correct / fallback / wrong),
    average latency, and explain-step quality (coherence, grounding,
    hallucination behavior observed) -- same shape as the README's "Model
