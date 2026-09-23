@@ -8,14 +8,11 @@ this repo was actually built.
 ## Project rules
 
 - **Ask before design decisions.** Don't make an architectural or behavioral
-  call unilaterally -- surface it and get a decision before implementing. If
-  a call has to be made mid-task, implement it, but flag clearly afterward
-  that it was made autonomously and needs review (see `NOTES.md` Session 1
-  for how this has been handled before: a decision was implemented, then
-  logged and approved after the fact rather than presented as if it had been
-  asked for).
+  call unilaterally: surface it and get a decision before implementing. If a
+  call must be made mid-task, implement it and flag it clearly for review
+  afterward.
 - **Never commit real system output.** README, NOTES.md, tests, and evals
-  must only ever use fabricated or genuinely non-identifying sample data --
+  must only ever use fabricated or genuinely non-identifying sample data:
   real `lsof`/`ps` output, process names, ports, PIDs, or paths from any
   actual machine never get written to a tracked file. The README's web UI
   screenshot (`docs/screenshot.png`) is the one deliberate exception,
@@ -35,10 +32,11 @@ this repo was actually built.
   `127.0.0.1` only) must refuse to run against anything but
   `localhost`/`127.0.0.1`/`::1`. No override flag for either.
 - **No attribution lines in commits.**
-- **Run the full test suite (`pytest`) after each commit.**
+- **Run the full test suite (`python3 -m pytest`) before each commit; commit
+  only when green.**
 - **Group commits by logical unit, not by every small change.** One
   meaningful commit per feature, per fix-with-its-tests, or per docs pass,
   not a commit per tiny edit. Write the message like a senior full-stack
   engineer: an imperative subject line under 72 characters that says what
   changed, a blank line, then a short body explaining why and any notable
-  tradeoff. No filler, no attribution lines.
+  tradeoff. No filler.
